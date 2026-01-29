@@ -1,0 +1,38 @@
+# =========================
+# Core backend (FastAPI + async Postgres + Redis + JWT + uploads)
+# =========================
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+
+SQLAlchemy>=2.0
+asyncpg>=0.29
+alembic>=1.13
+
+redis>=5.0          # redis-py (includes asyncio support)
+python-multipart>=0.0.9  # required for UploadFile form-data
+requests>=2.32
+
+anomalib[vlm_clip]>=1.0.0
+open-clip-torch>=2.24
+python-jose[cryptography]>=3.3.0  # JWT
+passlib[bcrypt]>=1.7.4            # password hashing
+
+Pillow>=10.3  # PIL
+httpx>=0.28   # async HTTP client
+pyjwt>=2.10
+
+# (Optional but common) better date parsing, etc.
+python-dateutil>=2.9
+
+# =========================
+# OPTIONAL: ML / inference (uncomment if you actually run models in-container)
+# NOTE: These pull large wheels. Keep commented if you only run "Dummy" inferencer.
+# =========================
+# torch==2.3.*           # choose cpu/cuda build as needed
+# torchvision==0.18.*    # match torch version
+# torchaudio==2.3.*      # optional
+# anomalib>=1.0.0        # provides TorchInferencer
+# openvino>=2024.4       # if you use OpenVINO runtime; optional
+

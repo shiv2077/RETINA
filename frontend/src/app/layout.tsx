@@ -28,7 +28,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen bg-gray-50 dark:bg-gray-900">
         {/* Navigation Header */}
-        <header className="bg-kuleuven-blue text-white shadow-lg">
+        <header className="bg-blue-900 text-white shadow-lg">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
               {/* Logo and Title */}
@@ -60,9 +60,9 @@ export default function RootLayout({
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
             <div className="flex flex-col sm:flex-row justify-between items-center text-sm text-gray-600 dark:text-gray-400">
               <div>
-                <span className="font-medium">RETINA Research Project</span>
+                <span className="font-medium">RETINA</span>
                 <span className="mx-2">•</span>
-                <span>KU Leuven</span>
+                <span>Anomaly Detection System</span>
               </div>
               <div className="mt-2 sm:mt-0">
                 <span className="text-xs">

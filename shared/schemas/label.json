@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://retina.kuleuven.be/schemas/label.json",
+  "$id": "label.json",
   "title": "LabelSubmission",
   "description": "Schema for active learning label submissions. Domain experts provide these labels to transition samples from Stage 1 to Stage 2 training data.",
   "type": "object",
@@ -57,21 +57,21 @@
   },
   "examples": [
     {
-      "image_id": "img_2024_001_front_panel",
+      "image_id": "img_001",
       "is_anomaly": true,
       "defect_category": "scratch",
       "confidence": "high",
-      "labeled_by": "expert_001",
-      "labeled_at": "2026-01-16T14:22:00Z",
+      "labeled_by": "user1",
+      "labeled_at": "2025-01-16T14:22:00Z",
       "notes": "Visible diagonal scratch on upper-left quadrant",
       "review_status": "approved"
     },
     {
-      "image_id": "img_2024_002_back_panel",
+      "image_id": "img_002",
       "is_anomaly": false,
       "confidence": "high",
-      "labeled_by": "expert_001",
-      "labeled_at": "2026-01-16T14:25:00Z",
+      "labeled_by": "user1",
+      "labeled_at": "2025-01-16T14:25:00Z",
       "review_status": "approved"
     }
   ]

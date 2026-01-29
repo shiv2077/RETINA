@@ -1,0 +1,25 @@
+dataset:
+  name: decospan_winclip
+  format: folder
+  path: E:\ML - Self Study\MV4QC_back_end\app\models\unsupervised\dataset
+  normal_dir: normal
+  abnormal_dir: anomaly
+  image_size: [512, 512]
+  normalization: imagenet
+  test_batch_size: 32
+  num_workers: 6
+  seed: 42
+
+model:
+  name: winclip
+  class_name: wood board  # This tells CLIP what object type to analyze
+  few_shot_source: C:/VakantieJob/Unsupervised_Models/dataset/train/normal
+  k_shot: 5  # 0 = zero-shot (no reference images), >0 = few-shot learning
+  scales: [2, 4, 8]
+
+trainer:
+  default_root_dir: output/winclip
+  enable_checkpointing: true
+
+optimization:
+  export_mode: torch

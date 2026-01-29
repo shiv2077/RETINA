@@ -158,7 +158,7 @@ export default async function DashboardPage() {
                 Uncertain samples awaiting expert review
               </p>
             </div>
-            <div className="text-2xl font-bold text-kuleuven-blue">
+            <div className="text-2xl font-bold text-blue-800">
               {systemStatus?.stats.labeling_pool_size ?? 0}
             </div>
           </div>
@@ -212,16 +212,15 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* Research Note */}
+      {/* Info Note */}
       <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
         <h3 className="font-medium text-blue-900 dark:text-blue-200 mb-2">
-          📚 Research Note
+          Pipeline Overview
         </h3>
         <p className="text-sm text-blue-800 dark:text-blue-300">
-          This system implements a two-stage pipeline for industrial visual inspection.
-          Stage 1 uses unsupervised methods (PatchCore, WinCLIP) for initial anomaly detection
-          with high recall. As labels are collected via active learning, Stage 2 enables
-          supervised classification with push-pull contrastive learning for higher precision.
+          Two-stage pipeline: Stage 1 uses unsupervised methods (PatchCore, WinCLIP) for initial 
+          anomaly detection. As labels are collected, Stage 2 enables supervised classification 
+          with push-pull contrastive learning.
         </p>
       </div>
     </div>

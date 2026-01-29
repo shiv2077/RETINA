@@ -63,7 +63,7 @@ body {
   }
 
   .btn-primary {
-    @apply btn bg-kuleuven-blue text-white hover:bg-blue-900 focus:ring-blue-500;
+    @apply btn bg-blue-800 text-white hover:bg-blue-900 focus:ring-blue-500;
   }
 
   .btn-secondary {
@@ -93,7 +93,7 @@ body {
   }
 
   .progress-bar-fill {
-    @apply h-full bg-kuleuven-blue transition-all duration-300;
+    @apply h-full bg-blue-800 transition-all duration-300;
   }
 }
 

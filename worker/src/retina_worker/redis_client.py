@@ -308,3 +308,99 @@ class RedisClient:
         """
         key = f"{KEY_PREFIX}:system:stats"
         return self.client.hincrby(key, "jobs_completed", 1)
+
+    # -------------------------------------------------------------------------
+    # Alert Operations (Matching Professor's Framework)
+    # -------------------------------------------------------------------------
+    
+    def send_alert(self, alert: dict) -> None:
+        """
+        Send a real-time alert for detected anomaly.
+        
+        Uses LPUSH to Redis list for real-time notification.
+        Matches professor's framework alert pattern.
+        
+        Parameters
+        ----------
+        alert : dict
+            Alert data containing job_id, user, label, timestamp
+        """
+        import json
+        
+        alerts_key = f"{KEY_PREFIX}:alerts"
+        
+        self.client.lpush(alerts_key, json.dumps(alert))
+        
+        # Trim to keep only last 100 alerts
+        self.client.ltrim(alerts_key, 0, 99)
+        
+        logger.info("Alert sent", job_id=alert.get("job_id"))
+    
+    def get_result(self, job_id: str) -> dict | None:
+        """
+        Get stored result for a job.
+        
+        Parameters
+        ----------
+        job_id : str
+            Job identifier
+            
+        Returns
+        -------
+        dict | None
+            Result data if exists
+        """
+        import json
+        
+        key = f"{KEY_PREFIX}:results:{job_id}"
+        result_json = self.client.hget(key, "result_data")
+        
+        if result_json:
+            return json.loads(result_json)
+        return None
+    
+    def update_result_unsupervised(
+        self,
+        job_id: str,
+        unsupervised_label: bool,
+        mismatch: bool,
+    ) -> None:
+        """
+        Update result with unsupervised model output.
+        
+        Matches professor's framework pattern where unsupervised
+        model runs in batch and updates existing records.
+        
+        Parameters
+        ----------
+        job_id : str
+            Job identifier
+        unsupervised_label : bool
+            Unsupervised model's anomaly prediction
+        mismatch : bool
+            Whether supervised and unsupervised disagree
+        """
+        import json
+        
+        key = f"{KEY_PREFIX}:results:{job_id}"
+        
+        # Get existing result
+        result_json = self.client.hget(key, "result_data")
+        if not result_json:
+            logger.warning("Result not found for unsupervised update", job_id=job_id)
+            return
+        
+        # Update result
+        result = json.loads(result_json)
+        result["unsupervised_label"] = unsupervised_label
+        result["mismatch"] = mismatch
+        
+        # Store updated result
+        self.client.hset(key, "result_data", json.dumps(result))
+        
+        logger.debug(
+            "Updated result with unsupervised",
+            job_id=job_id,
+            unsupervised=unsupervised_label,
+            mismatch=mismatch,
+        )

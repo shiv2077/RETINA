@@ -53,7 +53,7 @@ export default function LabelPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Labeler identity (in real app, this would come from auth)
-  const [labelerId] = useState('expert_001');
+  const [labelerId] = useState('labeler');
 
   // Fetch labeling pool on mount
   useEffect(() => {

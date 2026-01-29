@@ -1,0 +1,167 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://retina.kuleuven.be/schemas/result.json",
+  "title": "InferenceResult",
+  "description": "Schema for anomaly detection results stored in Redis and returned via API. Contains both Stage 1 (unsupervised) and Stage 2 (supervised) output formats.",
+  "type": "object",
+  "required": ["job_id", "image_id", "status", "created_at"],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to the originating inference job"
+    },
+    "image_id": {
+      "type": "string",
+      "description": "Reference to the processed image"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "processing", "completed", "failed"],
+      "description": "Current status of the inference job"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when result was created/updated"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when inference completed (null if pending/processing)"
+    },
+    "model_used": {
+      "type": "string",
+      "description": "Actual model that performed inference"
+    },
+    "stage": {
+      "type": "integer",
+      "enum": [1, 2],
+      "description": "Pipeline stage that produced this result"
+    },
+    "anomaly_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Overall anomaly score. 0.0 = definitely normal, 1.0 = definitely anomalous. Threshold typically set at 0.5 for binary classification."
+    },
+    "is_anomaly": {
+      "type": "boolean",
+      "description": "Binary classification result (anomaly_score > threshold)"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Model confidence in the prediction. Low confidence samples are candidates for active learning."
+    },
+    "stage1_output": {
+      "type": "object",
+      "description": "Stage 1 (Unsupervised) specific outputs",
+      "properties": {
+        "heatmap_available": {
+          "type": "boolean",
+          "description": "Whether spatial anomaly heatmap was generated"
+        },
+        "heatmap_key": {
+          "type": "string",
+          "description": "Redis key or S3 path to heatmap data (if available)"
+        },
+        "feature_distance": {
+          "type": "number",
+          "description": "Distance in feature space from normal distribution (PatchCore/PaDiM)"
+        },
+        "clip_similarity": {
+          "type": "number",
+          "description": "CLIP text-image similarity score (WinCLIP only)"
+        }
+      }
+    },
+    "stage2_output": {
+      "type": "object",
+      "description": "Stage 2 (Supervised) specific outputs - requires labeled training data",
+      "properties": {
+        "defect_category": {
+          "type": "string",
+          "description": "Predicted defect category (if multi-class)"
+        },
+        "category_probabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "description": "Probability distribution over defect categories"
+        },
+        "embedding_distance": {
+          "type": "number",
+          "description": "Distance from decision boundary in contrastive embedding space"
+        }
+      }
+    },
+    "active_learning": {
+      "type": "object",
+      "description": "Active learning metadata for sample selection",
+      "properties": {
+        "uncertainty_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Uncertainty measure for AL sampling. High uncertainty = valuable for labeling."
+        },
+        "in_labeling_pool": {
+          "type": "boolean",
+          "description": "Whether this sample is currently in the active learning pool"
+        },
+        "labeled": {
+          "type": "boolean",
+          "description": "Whether this sample has been labeled by an expert"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "description": "Error information if status is 'failed'",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Error code for programmatic handling"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description"
+        }
+      }
+    },
+    "processing_time_ms": {
+      "type": "integer",
+      "description": "Inference processing time in milliseconds"
+    }
+  },
+  "examples": [
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "image_id": "img_2024_001_front_panel",
+      "status": "completed",
+      "created_at": "2026-01-15T10:30:00Z",
+      "completed_at": "2026-01-15T10:30:02Z",
+      "model_used": "patchcore",
+      "stage": 1,
+      "anomaly_score": 0.73,
+      "is_anomaly": true,
+      "confidence": 0.85,
+      "stage1_output": {
+        "heatmap_available": true,
+        "heatmap_key": "heatmaps:550e8400-e29b-41d4-a716-446655440000",
+        "feature_distance": 2.34
+      },
+      "active_learning": {
+        "uncertainty_score": 0.45,
+        "in_labeling_pool": true,
+        "labeled": false
+      },
+      "processing_time_ms": 1523
+    }
+  ]
+}

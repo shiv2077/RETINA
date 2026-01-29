@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://retina.kuleuven.be/schemas/label.json",
+  "title": "LabelSubmission",
+  "description": "Schema for active learning label submissions. Domain experts provide these labels to transition samples from Stage 1 to Stage 2 training data.",
+  "type": "object",
+  "required": ["image_id", "is_anomaly", "labeled_by", "labeled_at"],
+  "properties": {
+    "image_id": {
+      "type": "string",
+      "description": "Reference to the labeled image"
+    },
+    "is_anomaly": {
+      "type": "boolean",
+      "description": "Binary label: true = anomaly/defect, false = normal"
+    },
+    "defect_category": {
+      "type": "string",
+      "description": "Optional defect category for multi-class classification. Examples: 'scratch', 'dent', 'discoloration', 'contamination'"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "Labeler's confidence in their assessment. Low confidence labels may be reviewed."
+    },
+    "labeled_by": {
+      "type": "string",
+      "description": "Identifier of the domain expert who provided the label"
+    },
+    "labeled_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of label submission"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Optional notes from the labeler about edge cases or ambiguity"
+    },
+    "bounding_box": {
+      "type": "object",
+      "description": "Optional defect localization (for future spatial supervision)",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "width", "height"]
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["pending", "approved", "rejected", "needs_review"],
+      "default": "pending",
+      "description": "Quality control status for the label"
+    }
+  },
+  "examples": [
+    {
+      "image_id": "img_2024_001_front_panel",
+      "is_anomaly": true,
+      "defect_category": "scratch",
+      "confidence": "high",
+      "labeled_by": "expert_001",
+      "labeled_at": "2026-01-16T14:22:00Z",
+      "notes": "Visible diagonal scratch on upper-left quadrant",
+      "review_status": "approved"
+    },
+    {
+      "image_id": "img_2024_002_back_panel",
+      "is_anomaly": false,
+      "confidence": "high",
+      "labeled_by": "expert_001",
+      "labeled_at": "2026-01-16T14:25:00Z",
+      "review_status": "approved"
+    }
+  ]
+}

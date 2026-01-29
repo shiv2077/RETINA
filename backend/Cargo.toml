@@ -1,0 +1,71 @@
+[package]
+name = "retina-backend"
+version = "0.1.0"
+edition = "2021"
+authors = ["RETINA Research Team <retina@kuleuven.be>"]
+description = "Backend API and orchestration layer for the RETINA multi-stage visual anomaly detection system"
+repository = "https://github.com/kuleuven/retina"
+license = "MIT"
+
+# =============================================================================
+# RESEARCH PROJECT METADATA
+# =============================================================================
+# Project: Multi-Stage Visual Anomaly Detection with Active Learning
+# Institution: KU Leuven
+# Status: Development (Month 2 of internship)
+#
+# This backend serves as the orchestration layer:
+# - REST API for frontend communication
+# - Job queue management via Redis Streams
+# - Active learning state tracking
+# - System health monitoring
+#
+# NOTE: ML inference is delegated to Python workers via Redis
+# =============================================================================
+
+[dependencies]
+# -----------------------------------------------------------------------------
+# Web Framework
+# -----------------------------------------------------------------------------
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+
+# -----------------------------------------------------------------------------
+# Serialization
+# -----------------------------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# -----------------------------------------------------------------------------
+# Redis (async client for job queues and state)
+# -----------------------------------------------------------------------------
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+
+# -----------------------------------------------------------------------------
+# Observability
+# -----------------------------------------------------------------------------
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+dotenvy = "0.15"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

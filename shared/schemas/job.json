@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://retina.kuleuven.be/schemas/job.json",
+  "title": "InferenceJob",
+  "description": "Schema for inference job messages passed between Rust backend and Python worker via Redis Streams. This contract ensures type-safe communication across language boundaries.",
+  "type": "object",
+  "required": ["job_id", "image_id", "model_type", "stage", "submitted_at"],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this inference job (UUIDv4)"
+    },
+    "image_id": {
+      "type": "string",
+      "description": "Reference to the submitted image. In current implementation, this is a simulated ID. Future: S3/MinIO object key."
+    },
+    "model_type": {
+      "type": "string",
+      "enum": ["patchcore", "padim", "winclip", "pushpull"],
+      "description": "Model to use for inference. Stage 1 models: patchcore, padim, winclip. Stage 2 model: pushpull (requires labeled data)."
+    },
+    "stage": {
+      "type": "integer",
+      "enum": [1, 2],
+      "description": "Pipeline stage. 1 = Unsupervised/Zero-shot detection. 2 = Supervised classification (requires AL labels)."
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of job submission"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 5,
+      "description": "Job priority (0 = lowest, 10 = highest). Higher priority jobs are processed first."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional metadata for tracking and debugging",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Origin of submission (api, batch, active_learning)"
+        },
+        "batch_id": {
+          "type": "string",
+          "description": "If part of batch submission, the batch identifier"
+        },
+        "callback_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional webhook URL for result notification"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "image_id": "img_2024_001_front_panel",
+      "model_type": "patchcore",
+      "stage": 1,
+      "submitted_at": "2026-01-15T10:30:00Z",
+      "priority": 5,
+      "metadata": {
+        "source": "api"
+      }
+    }
+  ]
+}

@@ -31,13 +31,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod auth;
 mod config;
+mod db;
 mod error;
 mod models;
 mod routes;
@@ -45,6 +48,7 @@ mod services;
 
 use config::Config;
 use services::redis::RedisService;
+use services::ImageStorage;
 
 /// Application state shared across all request handlers.
 ///
@@ -52,8 +56,14 @@ use services::redis::RedisService;
 /// configuration. It's wrapped in Arc and cloned into each request handler.
 #[derive(Clone)]
 pub struct AppState {
+    /// PostgreSQL connection pool
+    pub db: Arc<PgPool>,
+
     /// Redis service for job queuing and result storage
     pub redis: Arc<RedisService>,
+
+    /// Image storage service
+    pub images: Arc<ImageStorage>,
 
     /// Application configuration
     pub config: Arc<Config>,
@@ -101,10 +111,33 @@ async fn main() -> anyhow::Result<()> {
     info!("Redis data structures initialized");
 
     // -------------------------------------------------------------------------
+    // Initialize PostgreSQL Database
+    // -------------------------------------------------------------------------
+    // PostgreSQL stores user accounts and anomaly records for persistence.
+    // Matching professor's framework pattern.
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://retina:retina@localhost:5432/retina".to_string());
+    
+    let db_pool = db::pool::create_pool(&database_url).await?;
+    info!("PostgreSQL connection established");
+
+    // Run database migrations
+    db::pool::run_migrations(&db_pool).await?;
+    info!("Database migrations complete");
+
+    // -------------------------------------------------------------------------
+    // Initialize Image Storage
+    // -------------------------------------------------------------------------
+    let image_storage = ImageStorage::new(None).await?;
+    info!("Image storage initialized");
+
+    // -------------------------------------------------------------------------
     // Build Application State
     // -------------------------------------------------------------------------
     let state = AppState {
+        db: Arc::new(db_pool),
         redis: Arc::new(redis_service),
+        images: Arc::new(image_storage),
         config: Arc::new(config.clone()),
     };
 
@@ -123,11 +156,14 @@ async fn main() -> anyhow::Result<()> {
     // -------------------------------------------------------------------------
     // The router is organized by domain:
     // - /health: Health check (for Docker/K8s)
+    // - /auth: Authentication (login, register)
     // - /api/images: Image submission and result retrieval
     // - /api/labels: Active learning label submission
+    // - /api/anomaly: Real-time alerts
     // - /api/system: System status and metrics
     let app = Router::new()
         .merge(routes::health::router())
+        .nest("/auth", routes::auth_router())
         .nest("/api", routes::api_router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)

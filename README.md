@@ -2,11 +2,7 @@
 
 ## Multi-Stage Visual Anomaly Detection with Active Learning
 
-> **Research Project** | KU Leuven | Department of Computer Science
->
-> **Timeline**: October 2024 – Present
->
-> **Status**: Early-stage development (internship prototype)
+> Visual anomaly detection system combining unsupervised learning with active learning.
 
 ---
 
@@ -223,7 +219,7 @@ Job Submission Flow:
 
 ```bash
 # Clone the repository
-git clone https://github.com/kuleuven/retina.git
+git clone <your-repo-url>
 cd retina
 
 # Copy environment template
@@ -634,12 +630,10 @@ All components use structured logging in JSON format:
 
 ## License
 
-This project is developed as part of research at KU Leuven. License terms TBD.
+MIT License
 
 ---
 
 ## Acknowledgments
 
-- KU Leuven Department of Computer Science
-- Research advisors and collaborators
-- Open-source community (anomalib, Axum, Next.js)
+- Open-source libraries: anomalib, Axum, Next.js

@@ -5,10 +5,10 @@
 # Python package for the ML inference worker that processes anomaly detection
 # jobs from the Redis queue.
 #
-# Research Status:
-# - Model inference is currently stubbed with deterministic placeholders
-# - Real model integration planned via Anomalib framework
-# - Push-pull contrastive learning for Stage 2 pending implementation
+# Current Status:
+# - Model inference uses deterministic stubs for testing
+# - Real model integration via Anomalib framework
+# - Push-pull contrastive learning for Stage 2
 #
 # =============================================================================
 
@@ -19,9 +19,7 @@ description = "ML inference worker for the RETINA multi-stage anomaly detection 
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [
-    { name = "RETINA Research Team", email = "retina@kuleuven.be" }
-]
+authors = []
 keywords = ["anomaly-detection", "machine-learning", "active-learning", "industrial-inspection"]
 classifiers = [
     "Development Status :: 3 - Alpha",

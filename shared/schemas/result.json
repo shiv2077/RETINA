@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://retina.kuleuven.be/schemas/result.json",
+  "$id": "result.json",
   "title": "InferenceResult",
   "description": "Schema for anomaly detection results stored in Redis and returned via API. Contains both Stage 1 (unsupervised) and Stage 2 (supervised) output formats.",
   "type": "object",
@@ -144,8 +144,8 @@
       "job_id": "550e8400-e29b-41d4-a716-446655440000",
       "image_id": "img_2024_001_front_panel",
       "status": "completed",
-      "created_at": "2026-01-15T10:30:00Z",
-      "completed_at": "2026-01-15T10:30:02Z",
+      "created_at": "2025-01-15T10:30:00Z",
+      "completed_at": "2025-01-15T10:30:02Z",
       "model_used": "patchcore",
       "stage": 1,
       "anomaly_score": 0.73,

@@ -406,6 +406,121 @@ impl RedisService {
 
         Ok(pong == "PONG")
     }
+
+    // -------------------------------------------------------------------------
+    // Mismatch Review Operations (Matching Professor's Framework)
+    // -------------------------------------------------------------------------
+
+    /// Get all records with mismatch between supervised and unsupervised.
+    pub async fn get_mismatch_records(&self) -> AppResult<Vec<crate::routes::labels::PendingReviewRecord>> {
+        let mut conn = self.connection.clone();
+        
+        // Get all results and filter for mismatch
+        // In production, use a dedicated index or sorted set
+        let mismatch_key = format!("{}:mismatches", KEY_PREFIX);
+        
+        let job_ids: Vec<String> = conn
+            .smembers(&mismatch_key)
+            .await
+            .map_err(AppError::Redis)?;
+        
+        let mut records = Vec::new();
+        for job_id in job_ids {
+            let result_key = format!("{}:results:{}", KEY_PREFIX, job_id);
+            let result_data: Option<String> = conn
+                .hget(&result_key, "result_data")
+                .await
+                .map_err(AppError::Redis)?;
+            
+            if let Some(data) = result_data {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(&data) {
+                    // Only include if not yet reviewed
+                    if result.get("reviewed").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        continue;
+                    }
+                    
+                    records.push(crate::routes::labels::PendingReviewRecord {
+                        job_id: job_id.clone(),
+                        image_id: result.get("image_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        supervised_label: result.get("is_anomaly")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        unsupervised_label: result.get("unsupervised_label")
+                            .and_then(|v| v.as_bool()),
+                        mismatch: result.get("mismatch")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        timestamp: result.get("created_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        
+        Ok(records)
+    }
+
+    /// Submit expert review for a record.
+    pub async fn submit_review(
+        &self,
+        job_id: &str,
+        expert_label: &str,
+        final_classification: &str,
+    ) -> AppResult<()> {
+        let mut conn = self.connection.clone();
+        
+        // Get existing result
+        let result_key = format!("{}:results:{}", KEY_PREFIX, job_id);
+        let result_data: Option<String> = conn
+            .hget(&result_key, "result_data")
+            .await
+            .map_err(AppError::Redis)?;
+        
+        if let Some(data) = result_data {
+            let mut result: serde_json::Value = serde_json::from_str(&data)?;
+            
+            // Update with review data
+            result["reviewed"] = serde_json::json!(true);
+            result["expert_label"] = serde_json::json!(expert_label);
+            result["final_classification"] = serde_json::json!(final_classification);
+            
+            // Store updated result
+            let updated_data = serde_json::to_string(&result)?;
+            let _: () = conn
+                .hset(&result_key, "result_data", &updated_data)
+                .await
+                .map_err(AppError::Redis)?;
+            
+            // Remove from mismatch set
+            let mismatch_key = format!("{}:mismatches", KEY_PREFIX);
+            let _: () = conn
+                .srem(&mismatch_key, job_id)
+                .await
+                .map_err(AppError::Redis)?;
+            
+            tracing::info!(job_id = %job_id, "Review submitted");
+        }
+        
+        Ok(())
+    }
+
+    /// Mark a record as having mismatch.
+    pub async fn mark_mismatch(&self, job_id: &str) -> AppResult<()> {
+        let mut conn = self.connection.clone();
+        let mismatch_key = format!("{}:mismatches", KEY_PREFIX);
+        
+        let _: () = conn
+            .sadd(&mismatch_key, job_id)
+            .await
+            .map_err(AppError::Redis)?;
+        
+        Ok(())
+    }
 }
 
 /// System statistics from Redis.

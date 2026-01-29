@@ -24,6 +24,14 @@ pub enum AppError {
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
+    /// PostgreSQL database error
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+
+    /// Authentication error (401)
+    #[error("Authentication failed: {0}")]
+    Unauthorized(String),
+
     /// Resource not found (404)
     #[error("Resource not found: {0}")]
     NotFound(String),
@@ -52,6 +60,16 @@ impl IntoResponse for AppError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "REDIS_ERROR",
                 format!("Database error: {}", e),
+            ),
+            AppError::Database(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATABASE_ERROR",
+                format!("Database error: {}", e),
+            ),
+            AppError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                msg.clone(),
             ),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),

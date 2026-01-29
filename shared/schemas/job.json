@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://retina.kuleuven.be/schemas/job.json",
+  "$id": "job.json",
   "title": "InferenceJob",
   "description": "Schema for inference job messages passed between Rust backend and Python worker via Redis Streams. This contract ensures type-safe communication across language boundaries.",
   "type": "object",
@@ -63,7 +63,7 @@
       "image_id": "img_2024_001_front_panel",
       "model_type": "patchcore",
       "stage": 1,
-      "submitted_at": "2026-01-15T10:30:00Z",
+      "submitted_at": "2025-01-15T10:30:00Z",
       "priority": 5,
       "metadata": {
         "source": "api"

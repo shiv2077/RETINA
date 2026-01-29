@@ -49,4 +49,4 @@ See Also
 """
 
 __version__ = "0.1.0"
-__author__ = "RETINA Research Team"
+__author__ = ""

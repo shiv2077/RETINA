@@ -47,6 +47,7 @@ from .factory import get_model
 from .patchcore_stub import PatchCoreStub
 from .winclip_stub import WinCLIPStub
 from .pushpull_stub import PushPullStub
+from .supervised_classifier import SupervisedClassifier, get_supervised_classifier
 
 __all__ = [
     "AnomalyDetector",

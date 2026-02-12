@@ -1,0 +1,49 @@
+# AdaCLIP Wood Evaluation Config
+mode: "inference"  # "evaluation" or "inference"
+
+# Model settings
+model:
+  backbone: "ViT-L/14"
+  embed_dim: 768  #pretrained
+  vision_cfg:   
+    layers: 24  #pretrained
+    width: 1024 #pretrained
+  text_cfg:
+    layers: 12  #pretrained
+    width: 768  #pretrained
+  learning_rate: 1e-4
+  image_size: 518 
+  prompting_depth: 4  #pretrained
+  prompting_length: 5 #pretrained
+  prompting_type: "SD"  #pretrained
+  prompting_branch: "VL"  #pretrained
+  use_hsf: true # if false then it will be simler/faster 
+  k_clusters: 50
+
+# Prompts
+prompts:
+  anomaly: a photo of wood with small defective texture
+  normal: a photo of wood with natural grain texture and black background
+  #normal: "a photo of wood with natural grain texture and black background"
+  #anomaly: "a photo of damaged wood with visible defects like cracks, stains, cuts, light scratches, fine lines, subtle marks or surface streaks"
+# Paths
+paths:
+  dataset: "/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/Dataset"
+  adaclip_repo: "/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/AdaCLIP"
+  weights: "/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/AdaCLIP/weights/pretrained_all.pth"
+  cache_dir: "/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/cache"
+
+# Output settings
+output:
+  create_visualizations: true
+  create_error_folders: true     # FP/FN folders
+  save_detected_anomalies: true  # Detected anomalies folder
+
+# Inference settings
+inference:
+  threshold: 0.5
+
+# Data settings (optional)
+data:
+  max_samples: 100  # Limit total samples for testing
+  #max_samples: null  # Set to null for full dataset

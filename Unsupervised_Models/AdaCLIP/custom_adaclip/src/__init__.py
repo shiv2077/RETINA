@@ -1,0 +1,1 @@
+# AdaCLIP Evaluation Package

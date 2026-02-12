@@ -1,415 +1,413 @@
 'use client';
 
 /**
- * RETINA - Results Page
- * =====================
+ * RETINA - Evaluation & Results Dashboard
+ * =======================================
  *
- * Displays inference results and allows querying by job/image ID.
- *
- * Features:
- * - Search by job ID or image ID
- * - Anomaly score visualization
- * - Stage-specific output display
- * - Active learning metadata
+ * Comprehensive evaluation dashboard showing:
+ * - Model performance metrics (AUROC, F1, etc.)
+ * - Per-category breakdown
+ * - Confusion matrix visualization
+ * - ROC curves
+ * - Recent inference results
  */
 
-import { useState } from 'react';
-import { getResult, ResultResponse, InferenceResult } from '@/lib/api';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+interface EvaluationResult {
+  category: string;
+  image_auroc: number;
+  pixel_auroc: number;
+  f1_score: number;
+  precision: number;
+  recall: number;
+  threshold: number;
+  confusion_matrix: {
+    tp: number;
+    tn: number;
+    fp: number;
+    fn: number;
+  };
+}
+
+interface ModelStatus {
+  patchcore_trained: boolean;
+  bgad_trained: boolean;
+  category: string | null;
+}
+
+interface RecentResult {
+  image_id: string;
+  anomaly_score: number;
+  is_anomaly: boolean;
+  timestamp: string;
+}
 
 export default function ResultsPage() {
-  const [searchId, setSearchId] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<ResultResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<Record<string, EvaluationResult>>({});
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [categories, setCategories] = useState<string[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [recentResults, setRecentResults] = useState<RecentResult[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [evaluating, setEvaluating] = useState(false);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Fetch data
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [statusRes, categoriesRes, evalsRes] = await Promise.all([
+          fetch(`${API_URL}/status`).catch(() => null),
+          fetch(`${API_URL}/categories`).catch(() => null),
+          fetch(`${API_URL}/evaluations`).catch(() => null),
+        ]);
 
-    if (!searchId.trim()) {
-      setError('Please enter a job ID or image ID');
-      return;
-    }
+        if (statusRes?.ok) {
+          const data = await statusRes.json();
+          setModelStatus(data.pipeline);
+        }
 
-    setIsLoading(true);
-    setError(null);
+        if (categoriesRes?.ok) {
+          const data = await categoriesRes.json();
+          setCategories(data.categories || []);
+        }
 
+        if (evalsRes?.ok) {
+          const data = await evalsRes.json();
+          setEvaluations(data.evaluations || {});
+        }
+      } catch (e) {
+        console.error('Failed to fetch data:', e);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  // Run evaluation
+  const runEvaluation = async (category: string) => {
+    setEvaluating(true);
     try {
-      const response = await getResult(searchId.trim());
-      setResult(response);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch result');
-      setResult(null);
+      const res = await fetch(`${API_URL}/pipeline/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setEvaluations(prev => ({
+          ...prev,
+          [category]: data.result,
+        }));
+      }
+    } catch (e) {
+      console.error('Evaluation failed:', e);
     } finally {
-      setIsLoading(false);
+      setEvaluating(false);
     }
   };
 
-  return (
-    <div className="space-y-6">
-      {/* Page Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-          Inference Results
-        </h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-400">
-          View anomaly detection results by job ID or image ID
-        </p>
+  // Calculate aggregate metrics
+  const aggregateMetrics = Object.values(evaluations);
+  const meanAUROC = aggregateMetrics.length > 0
+    ? aggregateMetrics.reduce((sum, e) => sum + e.image_auroc, 0) / aggregateMetrics.length
+    : 0;
+  const meanF1 = aggregateMetrics.length > 0
+    ? aggregateMetrics.reduce((sum, e) => sum + e.f1_score, 0) / aggregateMetrics.length
+    : 0;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
       </div>
-
-      {/* Search Form */}
-      <div className="card">
-        <form onSubmit={handleSearch} className="flex gap-4">
-          <input
-            type="text"
-            value={searchId}
-            onChange={(e) => setSearchId(e.target.value)}
-            placeholder="Enter job ID or image ID"
-            className="input flex-1"
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !searchId.trim()}
-            className="btn-primary"
-          >
-            {isLoading ? '🔄 Loading...' : '🔍 Search'}
-          </button>
-        </form>
-      </div>
-
-      {/* Error Display */}
-      {error && (
-        <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-          <p className="text-red-700 dark:text-red-300">⚠️ {error}</p>
-        </div>
-      )}
-
-      {/* Result Display */}
-      {result && (
-        <div className="space-y-6">
-          {result.found && result.result ? (
-            <ResultCard result={result.result} />
-          ) : (
-            <div className="card text-center py-12">
-              <p className="text-gray-500 dark:text-gray-400">
-                No result found for this ID
-              </p>
-              <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
-                {result.message}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Initial State */}
-      {!result && !error && (
-        <div className="card text-center py-12">
-          <p className="text-gray-500 dark:text-gray-400">
-            Enter a job ID or image ID to view results
-          </p>
-          <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
-            Job IDs are UUIDs returned when submitting images
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Result card component showing full inference details.
- */
-function ResultCard({ result }: { result: InferenceResult }) {
-  const isCompleted = result.status === 'completed';
-  const isPending = ['pending', 'queued', 'processing'].includes(result.status);
-  const isFailed = result.status === 'failed';
-
-  // Determine anomaly class for styling
-  const getAnomalyClass = (score: number) => {
-    if (score < 0.3) return 'normal';
-    if (score < 0.7) return 'uncertain';
-    return 'anomaly';
-  };
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Status Header */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Job ID</p>
-            <p className="font-mono text-lg text-gray-900 dark:text-white">
-              {result.job_id}
-            </p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+      {/* Header */}
+      <header className="border-b border-slate-700 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <Link href="/" className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-xl font-bold">RETINA</h1>
+                <p className="text-xs text-slate-400">Evaluation Dashboard</p>
+              </div>
+            </Link>
           </div>
-          <StatusBadge status={result.status} />
+
+          <nav className="flex items-center space-x-6">
+            <Link href="/" className="text-slate-400 hover:text-white transition">Dashboard</Link>
+            <Link href="/label" className="text-slate-400 hover:text-white transition">Label</Link>
+            <Link href="/results" className="text-blue-400 font-medium">Results</Link>
+            <Link href="/demo" className="text-slate-400 hover:text-white transition">Demo</Link>
+          </nav>
         </div>
+      </header>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-          <div>
-            <p className="text-gray-500 dark:text-gray-400">Image ID</p>
-            <p className="font-medium text-gray-900 dark:text-white">
-              {result.image_id}
-            </p>
-          </div>
-          <div>
-            <p className="text-gray-500 dark:text-gray-400">Stage</p>
-            <p className="font-medium text-gray-900 dark:text-white">
-              Stage {result.stage}{' '}
-              {result.stage === 1 ? '(Unsupervised)' : '(Supervised)'}
-            </p>
-          </div>
-          <div>
-            <p className="text-gray-500 dark:text-gray-400">Model</p>
-            <p className="font-medium text-gray-900 dark:text-white uppercase">
-              {result.model_used || 'N/A'}
-            </p>
-          </div>
-          <div>
-            <p className="text-gray-500 dark:text-gray-400">Processing Time</p>
-            <p className="font-medium text-gray-900 dark:text-white">
-              {result.processing_time_ms
-                ? `${result.processing_time_ms}ms`
-                : 'N/A'}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Pending State */}
-      {isPending && (
-        <div className="card text-center py-8">
-          <div className="text-4xl mb-4 animate-pulse">⏳</div>
-          <p className="text-gray-600 dark:text-gray-400">
-            Job is {result.status}...
-          </p>
-          <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">
-            Refresh the page to check for updates
-          </p>
-        </div>
-      )}
-
-      {/* Failed State */}
-      {isFailed && result.error && (
-        <div className="card bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
-          <h3 className="text-lg font-semibold text-red-700 dark:text-red-300 mb-2">
-            ❌ Inference Failed
-          </h3>
-          <p className="text-red-600 dark:text-red-400">
-            <strong>Error Code:</strong> {result.error.code}
-          </p>
-          <p className="text-red-600 dark:text-red-400 mt-1">
-            <strong>Message:</strong> {result.error.message}
-          </p>
-        </div>
-      )}
-
-      {/* Completed State - Anomaly Score */}
-      {isCompleted && result.anomaly_score !== undefined && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Anomaly Detection Result
-          </h3>
-
-          {/* Score Visualization */}
-          <div className="mb-6">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Anomaly Score
-              </span>
-              <span
-                className={`text-2xl font-bold ${
-                  result.is_anomaly
-                    ? 'text-red-600 dark:text-red-400'
-                    : 'text-green-600 dark:text-green-400'
-                }`}
-              >
-                {(result.anomaly_score * 100).toFixed(1)}%
-              </span>
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        {/* Aggregate Metrics */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+            <div className="flex items-center justify-between">
+              <div className="text-slate-400 text-sm">Mean AUROC</div>
+              <span className="text-2xl">📊</span>
             </div>
-            <div className="anomaly-score-bar">
-              <div
-                className={`anomaly-score-fill ${getAnomalyClass(
-                  result.anomaly_score
-                )}`}
-                style={{ width: `${result.anomaly_score * 100}%` }}
-              />
+            <div className="text-3xl font-bold mt-2">
+              {(meanAUROC * 100).toFixed(2)}%
             </div>
-            <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
-              <span>Normal</span>
-              <span>Uncertain</span>
-              <span>Anomaly</span>
+            <div className="text-sm text-slate-500 mt-1">
+              Across {aggregateMetrics.length} categories
             </div>
           </div>
 
-          {/* Classification Result */}
-          <div className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
-            <div
-              className={`text-4xl ${
-                result.is_anomaly ? 'text-red-500' : 'text-green-500'
-              }`}
+          <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+            <div className="flex items-center justify-between">
+              <div className="text-slate-400 text-sm">Mean F1 Score</div>
+              <span className="text-2xl">🎯</span>
+            </div>
+            <div className="text-3xl font-bold mt-2">
+              {(meanF1 * 100).toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+            <div className="flex items-center justify-between">
+              <div className="text-slate-400 text-sm">PatchCore</div>
+              <span className={`w-3 h-3 rounded-full ${modelStatus?.patchcore_trained ? 'bg-green-500' : 'bg-red-500'}`}></span>
+            </div>
+            <div className="text-xl font-bold mt-2">
+              {modelStatus?.patchcore_trained ? 'Trained' : 'Not Trained'}
+            </div>
+            <div className="text-sm text-slate-500 mt-1">
+              {modelStatus?.category || 'No category'}
+            </div>
+          </div>
+
+          <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+            <div className="flex items-center justify-between">
+              <div className="text-slate-400 text-sm">BGAD</div>
+              <span className={`w-3 h-3 rounded-full ${modelStatus?.bgad_trained ? 'bg-green-500' : 'bg-red-500'}`}></span>
+            </div>
+            <div className="text-xl font-bold mt-2">
+              {modelStatus?.bgad_trained ? 'Trained' : 'Not Trained'}
+            </div>
+            <div className="text-sm text-slate-500 mt-1">
+              Supervised refinement
+            </div>
+          </div>
+        </div>
+
+        {/* Per-Category Results */}
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Per-Category Evaluation</h2>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm"
             >
-              {result.is_anomaly ? '⚠️' : '✅'}
-            </div>
-            <div>
-              <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                {result.is_anomaly ? 'Anomaly Detected' : 'Normal Sample'}
-              </p>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Confidence: {((result.confidence || 0) * 100).toFixed(1)}%
-              </p>
-            </div>
+              <option value="all">All Categories</option>
+              {categories.map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-slate-400">Category</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">Image AUROC</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">Pixel AUROC</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">F1 Score</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">Precision</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">Recall</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-slate-400">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {categories
+                  .filter(cat => selectedCategory === 'all' || cat === selectedCategory)
+                  .map(category => {
+                    const eval_ = evaluations[category];
+                    return (
+                      <tr key={category} className="border-b border-slate-700/50 hover:bg-slate-800/50">
+                        <td className="py-3 px-4 font-medium capitalize">{category}</td>
+                        <td className="py-3 px-4 text-center">
+                          {eval_ ? (
+                            <span className={`font-semibold ${eval_.image_auroc >= 0.9 ? 'text-green-400' : eval_.image_auroc >= 0.7 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {(eval_.image_auroc * 100).toFixed(2)}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {eval_ ? (
+                            <span className={`font-semibold ${eval_.pixel_auroc >= 0.9 ? 'text-green-400' : eval_.pixel_auroc >= 0.7 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {(eval_.pixel_auroc * 100).toFixed(2)}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {eval_ ? `${(eval_.f1_score * 100).toFixed(2)}%` : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {eval_ ? `${(eval_.precision * 100).toFixed(2)}%` : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {eval_ ? `${(eval_.recall * 100).toFixed(2)}%` : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <button
+                            onClick={() => runEvaluation(category)}
+                            disabled={evaluating}
+                            className="px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 rounded text-sm"
+                          >
+                            {evaluating ? '...' : 'Evaluate'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
 
-      {/* Stage 1 Output */}
-      {isCompleted && result.stage1_output && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Stage 1 Details (Unsupervised)
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <MetricBox
-              label="Feature Distance"
-              value={result.stage1_output.feature_distance?.toFixed(3) || 'N/A'}
-            />
-            <MetricBox
-              label="CLIP Similarity"
-              value={result.stage1_output.clip_similarity?.toFixed(3) || 'N/A'}
-            />
-            <MetricBox
-              label="Heatmap"
-              value={result.stage1_output.heatmap_available ? 'Available' : 'Not generated'}
-            />
-          </div>
-        </div>
-      )}
+        {/* Confusion Matrix (if available for selected category) */}
+        {selectedCategory !== 'all' && evaluations[selectedCategory]?.confusion_matrix && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+              <h3 className="text-lg font-semibold mb-4">Confusion Matrix - {selectedCategory}</h3>
+              <div className="grid grid-cols-3 gap-2 max-w-xs mx-auto">
+                <div></div>
+                <div className="text-center text-sm text-slate-400">Pred Normal</div>
+                <div className="text-center text-sm text-slate-400">Pred Anomaly</div>
+                
+                <div className="text-right text-sm text-slate-400 flex items-center justify-end">Actual Normal</div>
+                <div className="p-4 bg-green-500/20 border border-green-500/50 rounded text-center font-semibold text-green-400">
+                  {evaluations[selectedCategory].confusion_matrix.tn}
+                </div>
+                <div className="p-4 bg-red-500/20 border border-red-500/50 rounded text-center font-semibold text-red-400">
+                  {evaluations[selectedCategory].confusion_matrix.fp}
+                </div>
+                
+                <div className="text-right text-sm text-slate-400 flex items-center justify-end">Actual Anomaly</div>
+                <div className="p-4 bg-red-500/20 border border-red-500/50 rounded text-center font-semibold text-red-400">
+                  {evaluations[selectedCategory].confusion_matrix.fn}
+                </div>
+                <div className="p-4 bg-green-500/20 border border-green-500/50 rounded text-center font-semibold text-green-400">
+                  {evaluations[selectedCategory].confusion_matrix.tp}
+                </div>
+              </div>
+              <div className="flex justify-center space-x-4 mt-4 text-sm text-slate-400">
+                <span>TN: True Negative</span>
+                <span>FP: False Positive</span>
+                <span>FN: False Negative</span>
+                <span>TP: True Positive</span>
+              </div>
+            </div>
 
-      {/* Stage 2 Output */}
-      {isCompleted && result.stage2_output && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Stage 2 Details (Supervised)
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <MetricBox
-              label="Defect Category"
-              value={result.stage2_output.defect_category || 'N/A'}
-            />
-            <MetricBox
-              label="Embedding Distance"
-              value={result.stage2_output.embedding_distance?.toFixed(3) || 'N/A'}
-            />
-          </div>
-
-          {/* Category Probabilities */}
-          {result.stage2_output.category_probabilities && (
-            <div className="mt-4">
-              <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Category Probabilities
-              </p>
-              <div className="space-y-2">
-                {Object.entries(result.stage2_output.category_probabilities)
-                  .sort(([, a], [, b]) => b - a)
-                  .map(([category, probability]) => (
-                    <div key={category} className="flex items-center gap-2">
-                      <span className="w-24 text-sm text-gray-600 dark:text-gray-400 capitalize">
-                        {category}
-                      </span>
-                      <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full">
-                        <div
-                          className="h-full bg-blue-500 rounded-full"
-                          style={{ width: `${probability * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-sm text-gray-600 dark:text-gray-400 w-12">
-                        {(probability * 100).toFixed(0)}%
-                      </span>
+            <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+              <h3 className="text-lg font-semibold mb-4">Performance Breakdown</h3>
+              <div className="space-y-4">
+                {[
+                  { label: 'Image AUROC', value: evaluations[selectedCategory].image_auroc },
+                  { label: 'Pixel AUROC', value: evaluations[selectedCategory].pixel_auroc },
+                  { label: 'F1 Score', value: evaluations[selectedCategory].f1_score },
+                  { label: 'Precision', value: evaluations[selectedCategory].precision },
+                  { label: 'Recall', value: evaluations[selectedCategory].recall },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-slate-400">{label}</span>
+                      <span className="font-semibold">{(value * 100).toFixed(2)}%</span>
                     </div>
-                  ))}
+                    <div className="w-full h-2 bg-slate-700 rounded-full">
+                      <div
+                        className={`h-2 rounded-full transition-all ${
+                          value >= 0.9 ? 'bg-green-500' : value >= 0.7 ? 'bg-yellow-500' : 'bg-red-500'
+                        }`}
+                        style={{ width: `${value * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Active Learning Info */}
-      {isCompleted && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Active Learning Status
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <MetricBox
-              label="Uncertainty Score"
-              value={(result.active_learning.uncertainty_score * 100).toFixed(1) + '%'}
-            />
-            <MetricBox
-              label="In Labeling Pool"
-              value={result.active_learning.in_labeling_pool ? 'Yes' : 'No'}
-            />
-            <MetricBox
-              label="Labeled"
-              value={result.active_learning.labeled ? 'Yes' : 'No'}
-            />
           </div>
+        )}
 
-          {result.active_learning.uncertainty_score > 0.3 &&
-            !result.active_learning.labeled && (
-              <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                <p className="text-sm text-amber-800 dark:text-amber-200">
-                  ⚡ This sample has high uncertainty and may be valuable for labeling.{' '}
-                  <a
-                    href="/label"
-                    className="underline hover:no-underline font-medium"
-                  >
-                    Go to labeling interface →
-                  </a>
-                </p>
-              </div>
-            )}
+        {/* MVTec Benchmark Comparison */}
+        <div className="p-6 rounded-xl border border-slate-700 bg-slate-800/50">
+          <h3 className="text-lg font-semibold mb-4">MVTec AD Benchmark Reference</h3>
+          <p className="text-slate-400 text-sm mb-4">
+            Comparison with state-of-the-art methods on MVTec Anomaly Detection dataset
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-2 px-4">Method</th>
+                  <th className="text-center py-2 px-4">Image AUROC</th>
+                  <th className="text-center py-2 px-4">Pixel AUROC</th>
+                  <th className="text-center py-2 px-4">Type</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                <tr className="border-b border-slate-700/50 bg-blue-500/10">
+                  <td className="py-2 px-4 font-semibold text-blue-400">RETINA (Ours)</td>
+                  <td className="py-2 px-4 text-center">{(meanAUROC * 100).toFixed(1)}%</td>
+                  <td className="py-2 px-4 text-center">-</td>
+                  <td className="py-2 px-4 text-center">Hybrid</td>
+                </tr>
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-2 px-4">PatchCore</td>
+                  <td className="py-2 px-4 text-center">99.1%</td>
+                  <td className="py-2 px-4 text-center">98.1%</td>
+                  <td className="py-2 px-4 text-center">Memory Bank</td>
+                </tr>
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-2 px-4">EfficientAD</td>
+                  <td className="py-2 px-4 text-center">99.1%</td>
+                  <td className="py-2 px-4 text-center">96.8%</td>
+                  <td className="py-2 px-4 text-center">Student-Teacher</td>
+                </tr>
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-2 px-4">PaDiM</td>
+                  <td className="py-2 px-4 text-center">95.3%</td>
+                  <td className="py-2 px-4 text-center">97.5%</td>
+                  <td className="py-2 px-4 text-center">Gaussian</td>
+                </tr>
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-2 px-4">DRAEM</td>
+                  <td className="py-2 px-4 text-center">98.0%</td>
+                  <td className="py-2 px-4 text-center">97.3%</td>
+                  <td className="py-2 px-4 text-center">Reconstruction</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Status badge component.
- */
-function StatusBadge({ status }: { status: string }) {
-  const statusConfig: Record<
-    string,
-    { class: string; icon: string }
-  > = {
-    pending: { class: 'badge-info', icon: '⏳' },
-    queued: { class: 'badge-info', icon: '📋' },
-    processing: { class: 'badge-warning', icon: '⚙️' },
-    completed: { class: 'badge-success', icon: '✅' },
-    failed: { class: 'badge-danger', icon: '❌' },
-  };
-
-  const config = statusConfig[status] || { class: 'badge-info', icon: '❓' };
-
-  return (
-    <span className={`badge ${config.class}`}>
-      {config.icon} {status.charAt(0).toUpperCase() + status.slice(1)}
-    </span>
-  );
-}
-
-/**
- * Metric display box.
- */
-function MetricBox({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-      <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
-      <p className="text-lg font-semibold text-gray-900 dark:text-white">
-        {value}
-      </p>
+      </main>
     </div>
   );
 }

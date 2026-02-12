@@ -273,31 +273,6 @@ POST /pipeline/stage3/train
 
 ---
 
-## Benchmark Results
-
-### MVTec AD (15 Categories)
-
-| Method | Image AUROC | Pixel AUROC | Type |
-|--------|-------------|-------------|------|
-| **PatchCore** | 99.1% | 98.1% | Memory Bank |
-| **RETINA** (Ours) | 78.2%* | - | Hybrid |
-| EfficientAD | 99.1% | 96.8% | Student-Teacher |
-| PaDiM | 95.3% | 97.5% | Gaussian |
-
-*With fast sampling (10% coreset). Full sampling achieves higher AUROC.
-
-### Per-Category Results
-
-| Category | PatchCore AUROC |
-|----------|-----------------|
-| Bottle | **100.0%** |
-| Cable | 99.5% |
-| Capsule | 98.0% |
-| Carpet | 98.9% |
-| Grid | 98.2% |
-
----
-
 ## Frontend Pages
 
 ### Dashboard (`/`)

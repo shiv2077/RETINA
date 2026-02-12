@@ -1,0 +1,35 @@
+{
+  "train_samples": 300,
+  "test_samples": 10285,
+  "train_normal": 100,
+  "train_anomaly": 200,
+  "test_normal": 8669,
+  "test_anomaly": 1616,
+  "train_anomaly_categories": {
+    "not_labeled": 25,
+    "deuk": 25,
+    "krassen": 25,
+    "vlekken": 25,
+    "open voeg": 25,
+    "open fout": 25,
+    "open knop": 25,
+    "snijfout": 25
+  },
+  "test_anomaly_categories": {
+    "zaag kort": 29,
+    "scheef": 8,
+    "stuk fineer": 62,
+    "barst": 53,
+    "deuk": 92,
+    "vlekken": 91,
+    "zaag lang": 57,
+    "open fout uitlijning": 12,
+    "snijfout": 40,
+    "open fout schuur": 12,
+    "open voeg": 91,
+    "krassen": 92,
+    "open fout": 91,
+    "not_labeled": 795,
+    "open knop": 91
+  }
+}

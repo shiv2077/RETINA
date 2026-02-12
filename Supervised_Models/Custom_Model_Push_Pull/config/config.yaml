@@ -1,0 +1,53 @@
+# Simple Push-Pull Configuration - Like Working Prototype
+# ========================================================
+
+# Dataset and paths
+paths:
+  dataset: "/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/Dataset"
+  outputs: "outputs"
+  models: "models" 
+  data: "data"
+
+# Data configuration
+data:
+  img_size: 1024
+  expert_samples:
+    n_normal: 100
+    n_anomaly: 200
+    seed: 42
+
+# Simple model configuration
+model:
+  backbone: "efficientnet_b0"
+  feature_dim: 4096           # BIGGER features for better performance
+  #patch_size: 112           #This is for region based 
+  #num_patches: 4
+
+# Simple training configuration  
+training:
+  model_type: "simple"       # ALWAYS use simple
+  epochs: 80                # MORE epochs
+  batch_size: 16             # SMALLER batches  
+  learning_rate: 0.0005      # LOWER learning rate
+  weight_decay: 0.0001
+  optimizer: "adamw"         # Better optimizer
+  scheduler: "step"          # Simple step scheduler
+  patience: 10
+  balanced_sampling: false   # Like prototype
+  
+  # NO VALIDATION during training - like prototype
+  validate_every: 999        # Effectively disabled
+
+# Visualization settings - ALWAYS ON
+visualization:
+  create_plots: true         # Always create visualizations
+  save_to_visuals: true      # Save to visuals/ folder
+
+# Hardware configuration
+hardware:
+  num_workers: 4
+  pin_memory: true
+
+# Logging
+logging:
+  level: "INFO"

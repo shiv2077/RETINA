@@ -1,0 +1,34 @@
+data:
+  max_samples: 100
+inference:
+  threshold: 0.5
+mode: inference
+model:
+  backbone: ViT-L/14
+  embed_dim: 768
+  image_size: 518
+  k_clusters: 50
+  learning_rate: 1e-4
+  prompting_branch: VL
+  prompting_depth: 4
+  prompting_length: 5
+  prompting_type: SD
+  text_cfg:
+    layers: 12
+    width: 768
+  use_hsf: true
+  vision_cfg:
+    layers: 24
+    width: 1024
+output:
+  create_error_folders: true
+  create_visualizations: true
+  save_detected_anomalies: true
+paths:
+  adaclip_repo: /scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/AdaCLIP
+  cache_dir: /scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/cache
+  dataset: /scratch/leuven/369/vsc36963/Vakantiejob/Decospan/Dataset
+  weights: /scratch/leuven/369/vsc36963/Vakantiejob/Decospan/D04_Model_AdaCLIP/AdaCLIP/weights/pretrained_all.pth
+prompts:
+  anomaly: a photo of wood with small defective texture
+  normal: a photo of wood with natural grain texture and black background

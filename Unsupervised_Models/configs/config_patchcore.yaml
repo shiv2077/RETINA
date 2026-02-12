@@ -1,0 +1,28 @@
+dataset:
+  name: decospan
+  format: folder
+  path: C:/VakantieJob/Unsupervised_Models/dataset/decospan_small
+  normal_dir: normal
+  abnormal_dir: anomaly
+  image_size: [256, 256]
+  normalization: imagenet
+  train_batch_size: 32
+  eval_batch_size: 32
+  num_workers: 8
+  val_split_mode: from_train
+  val_split_ratio: 0.2
+  seed: 42
+
+model:
+  name: patchcore
+  backbone: resnet18
+  layers: ["layer2", "layer3"]
+  coreset_sampling_ratio: 0.1
+  num_neighbors: 15
+
+trainer:
+  default_root_dir: output/patchcore
+  enable_checkpointing: true
+
+optimization:
+  export_mode: torch

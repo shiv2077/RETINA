@@ -57,6 +57,19 @@ class EvaluationRequest(BaseModel):
     category: str
 
 
+class CascadeResponse(BaseModel):
+    model_used: str
+    anomaly_score: float
+    is_anomaly: bool
+    confidence: float
+    threshold: float
+    requires_expert_labeling: bool
+    routing_case: str
+    vlm_score: Optional[float] = None
+    vlm_reasoning: Optional[str] = None
+    timestamp: str
+    queue_info: Optional[Dict] = None
+
 # ============================================================================
 # Application Setup
 # ============================================================================
@@ -268,6 +281,135 @@ async def submit_label(submission: LabelSubmission):
 async def skip_sample(image_id: str):
     """Skip a sample without labeling."""
     return labeling_service.skip_sample(image_id)
+
+
+# ============================================================================
+# Cascade Inference & Active Learning Queue Endpoints
+# ============================================================================
+
+@app.post("/api/predict/cascade", response_model=CascadeResponse)
+async def predict_cascade(
+    file: UploadFile = File(...),
+    normal_threshold: float = 0.2,
+    anomaly_threshold: float = 0.8,
+    use_vlm_fallback: bool = True
+):
+    """
+    Cascade prediction endpoint.
+    
+    When uncertain (score between normal_threshold and anomaly_threshold):
+    - Routes to VLM for additional validation
+    - Automatically queues for expert annotation if flagged
+    
+    This is the primary entry point for active learning.
+    """
+    try:
+        # Read and parse image
+        contents = await file.read()
+        pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
+        
+        # Prepare tensor
+        from torchvision.transforms import Compose, Resize, Normalize, ToTensor
+        transform = Compose([
+            Resize((224, 224)),
+            ToTensor(),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        image_tensor = transform(pil_image).unsqueeze(0)
+        
+        # Run cascade prediction
+        cascade_result = inference_service.predict_with_cascade(
+            image=image_tensor,
+            normal_threshold=normal_threshold,
+            anomaly_threshold=anomaly_threshold,
+            use_vlm_fallback=use_vlm_fallback
+        )
+        
+        # If flagged for labeling, add to queue
+        if cascade_result.get("requires_expert_labeling"):
+            queue_result = labeling_service.add_to_cascade_queue(
+                image_path=str(file.filename),
+                bgad_score=cascade_result.get("anomaly_score", 0.0),
+                vlm_score=cascade_result.get("vlm_score"),
+                routing_case=cascade_result.get("routing_case"),
+                metadata={
+                    "bgad_confidence": cascade_result.get("confidence"),
+                    "vlm_reasoning": cascade_result.get("vlm_reasoning"),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+            cascade_result["queue_info"] = queue_result
+        
+        return cascade_result
+        
+    except Exception as e:
+        import logging
+        logging.error(f"Cascade prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/labeling/cascade/queue")
+async def get_cascade_queue(limit: int = Query(default=None)):
+    """
+    Fetch pending images from cascade annotation queue.
+    
+    Returns:
+    - Queue items with image paths and metadata
+    - Queue statistics (total pending, labeled, skipped)
+    - Each item ready for annotation studio
+    """
+    result = labeling_service.get_cascade_queue(limit=limit)
+    return result
+
+
+@app.post("/api/labeling/cascade/submit")
+async def submit_cascade_annotation(
+    image_id: str = Form(...),
+    label: str = Form(...),  # "normal" or "anomaly"
+    bounding_boxes: str = Form(default="[]"),  # JSON string
+    defect_types: str = Form(default="[]"),  # JSON list
+    notes: str = Form(default="")
+):
+    """
+    Submit annotation for cascade queue item.
+    
+    When submitted:
+    - Image is marked as labeled
+    - Annotation stored with cascade metadata
+    - Image removed from pending queue
+    """
+    try:
+        import json
+        bboxes = json.loads(bounding_boxes)
+        defects = json.loads(defect_types)
+        
+        result = labeling_service.mark_cascade_labeled(
+            image_id=image_id,
+            label=label,
+            bounding_boxes=bboxes,
+            defect_types=defects,
+            notes=notes
+        )
+        return result
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/labeling/cascade/skip/{image_id}")
+async def skip_cascade_item(image_id: str):
+    """Skip a cascade queue item without labeling."""
+    result = labeling_service.skip_cascade_item(image_id)
+    return result
+
+
+@app.get("/api/labeling/cascade/stats")
+async def get_cascade_stats():
+    """Get cascade queue statistics and annotation store stats."""
+    result = labeling_service.get_cascade_stats()
+    return result
 
 
 @app.get("/labels/progress")

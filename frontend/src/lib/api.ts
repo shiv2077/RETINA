@@ -61,9 +61,9 @@ export interface SubmitLabelRequest {
 /** Health check response */
 export interface HealthResponse {
   status: string;
-  service: string;
-  version: string;
-  redis_connected: boolean;
+  timestamp: string;
+  gpu_available: boolean;
+  gpu_name: string | null;
 }
 
 /** Image submission response */
@@ -148,6 +148,91 @@ export interface LabelingPoolResponse {
   stage2_threshold: number;
 }
 
+// ============================================================================
+// CASCADE INFERENCE & ACTIVE LEARNING TYPES
+// ============================================================================
+
+/** Cascade route case */
+export type CascadeRoutingCase = 
+  | 'A_confident_normal'
+  | 'B_confident_anomaly'
+  | 'C_uncertain_vlm_routed';
+
+/** Cascade prediction response */
+export interface CascadeResponse {
+  model_used: 'bgad' | 'ensemble' | 'vlm';
+  anomaly_score: number;
+  is_anomaly: boolean;
+  confidence: number;
+  routing_case: CascadeRoutingCase;
+  requires_expert_labeling: boolean;
+  vlm_result?: {
+    classification: string;
+    confidence?: number;
+  };
+  bgad_score?: number;
+  vlm_score?: number;
+  timestamp: string;
+  processing_time_ms?: number;
+  queue_info?: {
+    success: boolean;
+    image_id: string;
+    queue_position: number;
+    queue_size: number;
+  };
+}
+
+/** Cascade queue item */
+export interface CascadeQueueItem {
+  image_id: string;
+  image_path: string;
+  bgad_score: number;
+  vlm_score?: number;
+  routing_case: CascadeRoutingCase;
+  status: 'pending' | 'labeled' | 'skipped';
+  created_at: string;
+  metadata?: Record<string, any>;
+}
+
+/** Cascade queue response */
+export interface CascadeQueueResponse {
+  success: boolean;
+  queue: CascadeQueueItem[];
+  queue_size: number;
+  stats: {
+    total_in_queue: number;
+    pending: number;
+    labeled: number;
+    skipped: number;
+  };
+}
+
+/** Cascade annotation submission */
+export interface CascadeAnnotationSubmission {
+  image_id: string;
+  label: 'normal' | 'anomaly';
+  bounding_boxes: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    defect_type: string;
+    confidence?: number;
+  }>;
+  defect_types: string[];
+  notes?: string;
+}
+
+/** Cascade queue statistics */
+export interface CascadeQueueStats {
+  total_queued: number;
+  pending: number;
+  labeled: number;
+  skipped: number;
+  avg_bgad_score: number;
+  annotation_store_stats: Record<string, any>;
+}
+
 /** System statistics */
 export interface SystemStats {
   jobs_submitted: number;
@@ -200,14 +285,9 @@ async function apiFetch<T>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
 
-  const defaultHeaders: HeadersInit = {
-    'Content-Type': 'application/json',
-  };
-
   const response = await fetch(url, {
     ...options,
     headers: {
-      ...defaultHeaders,
       ...options.headers,
     },
   });
@@ -215,7 +295,7 @@ async function apiFetch<T>(
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new ApiError(
-      errorData.error?.message || `Request failed: ${response.statusText}`,
+      errorData.detail || errorData.error?.message || `Request failed: ${response.statusText}`,
       response.status,
       errorData.error?.code
     );
@@ -239,7 +319,7 @@ export async function getHealth(): Promise<HealthResponse> {
  * Get the current system status.
  */
 export async function getSystemStatus(): Promise<SystemStatusResponse> {
-  return apiFetch<SystemStatusResponse>('/api/system/status');
+  return apiFetch<SystemStatusResponse>('/status');
 }
 
 /**
@@ -248,8 +328,9 @@ export async function getSystemStatus(): Promise<SystemStatusResponse> {
 export async function submitImage(
   request: SubmitImageRequest
 ): Promise<SubmitImageResponse> {
-  return apiFetch<SubmitImageResponse>('/api/images/submit', {
+  return apiFetch<SubmitImageResponse>('/inference/predict', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   });
 }
@@ -260,7 +341,7 @@ export async function submitImage(
  * @param id - Either a job_id (UUID) or image_id
  */
 export async function getResult(id: string): Promise<ResultResponse> {
-  return apiFetch<ResultResponse>(`/api/images/${encodeURIComponent(id)}/result`);
+  return apiFetch<ResultResponse>('/inference/history');
 }
 
 /**
@@ -269,8 +350,9 @@ export async function getResult(id: string): Promise<ResultResponse> {
 export async function submitLabel(
   request: SubmitLabelRequest
 ): Promise<SubmitLabelResponse> {
-  return apiFetch<SubmitLabelResponse>('/api/labels/submit', {
+  return apiFetch<SubmitLabelResponse>('/labels/submit', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   });
 }
@@ -279,5 +361,156 @@ export async function submitLabel(
  * Get samples from the active learning labeling pool.
  */
 export async function getLabelingPool(): Promise<LabelingPoolResponse> {
-  return apiFetch<LabelingPoolResponse>('/api/labels/pool');
+  return apiFetch<LabelingPoolResponse>('/pipeline/stage2/samples');
+}
+
+// =============================================================================
+// CASCADE INFERENCE & ACTIVE LEARNING API
+// =============================================================================
+
+/**
+ * Run cascade prediction on an image.
+ * Routes between BGAD (fast) and VLM (fallback) based on confidence.
+ * Automatically queues for annotation if uncertain.
+ */
+export async function predictCascade(
+  imageFile: File,
+  options?: {
+    normal_threshold?: number;
+    anomaly_threshold?: number;
+    use_vlm_fallback?: boolean;
+  }
+): Promise<CascadeResponse> {
+  const formData = new FormData();
+  formData.append('file', imageFile);
+  
+  if (options?.normal_threshold !== undefined) {
+    formData.append('normal_threshold', options.normal_threshold.toString());
+  }
+  if (options?.anomaly_threshold !== undefined) {
+    formData.append('anomaly_threshold', options.anomaly_threshold.toString());
+  }
+  if (options?.use_vlm_fallback !== undefined) {
+    formData.append('use_vlm_fallback', options.use_vlm_fallback.toString());
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/predict/cascade`, {
+    method: 'POST',
+    body: formData,
+    // Don't set Content-Type header - let browser set it with boundary
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Cascade prediction failed: ${response.statusText}`,
+      response.status
+    );
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch pending images from the cascade annotation queue.
+ * These are images flagged by the cascade router for human review.
+ */
+export async function fetchAnnotationQueue(
+  limit?: number
+): Promise<CascadeQueueResponse> {
+  const params = new URL(`${API_BASE_URL}/api/labeling/cascade/queue`);
+  if (limit !== undefined) {
+    params.searchParams.append('limit', limit.toString());
+  }
+
+  const response = await fetch(params.toString(), {
+    method: 'GET',
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Failed to fetch annotation queue: ${response.statusText}`,
+      response.status
+    );
+  }
+
+  return response.json();
+}
+
+/**
+ * Submit an annotation for a cascade queue item.
+ */
+export async function submitCascadeAnnotation(
+  submission: CascadeAnnotationSubmission
+): Promise<{ success: boolean; image_id: string; remaining_in_queue: number }> {
+  const formData = new FormData();
+  formData.append('image_id', submission.image_id);
+  formData.append('label', submission.label);
+  formData.append('bounding_boxes', JSON.stringify(submission.bounding_boxes));
+  formData.append('defect_types', JSON.stringify(submission.defect_types));
+  if (submission.notes) {
+    formData.append('notes', submission.notes);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/labeling/cascade/submit`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Failed to submit annotation: ${response.statusText}`,
+      response.status
+    );
+  }
+
+  return response.json();
+}
+
+/**
+ * Skip a cascade queue item without labeling.
+ */
+export async function skipCascadeItem(
+  image_id: string
+): Promise<{ success: boolean; image_id: string; remaining_in_queue: number }> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/labeling/cascade/skip/${encodeURIComponent(image_id)}`,
+    {
+      method: 'POST',
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Failed to skip item: ${response.statusText}`,
+      response.status
+    );
+  }
+
+  return response.json();
+}
+
+/**
+ * Get cascade queue statistics.
+ */
+export async function getCascadeStats(): Promise<CascadeQueueStats> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/labeling/cascade/stats`,
+    {
+      method: 'GET',
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Failed to fetch stats: ${response.statusText}`,
+      response.status
+    );
+  }
+
+  return response.json();
 }

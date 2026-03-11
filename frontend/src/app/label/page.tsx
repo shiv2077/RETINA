@@ -10,10 +10,30 @@
  * - Keyboard shortcuts for efficiency
  * - Real image preview with anomaly heatmap overlay
  * - Progress tracking
+ * - Cascade queue integration (auto-flagged anomalies)
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import * as api from '@/lib/api';
+import { 
+  Loader2, 
+  Maximize2, 
+  ZoomIn, 
+  ZoomOut, 
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  Activity,
+  TrendingUp,
+  MousePointer2,
+  SquareDashed,
+  Inbox,
+  Save,
+  Check,
+  HelpCircle,
+  AlertTriangle
+} from 'lucide-react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -38,12 +58,17 @@ interface BoundingBox {
   confidence: number;
 }
 
-interface Sample {
+interface Sample extends api.CascadeQueueItem {
   image_id: string;
   image_path: string;
-  anomaly_score: number;
-  uncertainty_score: number;
+  anomaly_score?: number;
+  uncertainty_score?: number;
   heatmap_base64?: string;
+  bgad_score: number;
+  vlm_score?: number;
+  routing_case: api.CascadeRoutingCase;
+  created_at: string;
+  metadata?: any;
 }
 
 interface Annotation {
@@ -62,8 +87,9 @@ export default function LabelPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState('bottle');
+  const [selectedCategory, setSelectedCategory] = useState('cascade'); // Default to cascade queue
   const [categories, setCategories] = useState<string[]>([]);
+  const [isCascadeMode, setIsCascadeMode] = useState(true);
 
   // Annotation state
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
@@ -80,7 +106,8 @@ export default function LabelPage() {
   const [zoom, setZoom] = useState(1);
 
   // Stats
-  const [stats, setStats] = useState({ total: 0, normal: 0, anomaly: 0, uncertain: 0 });
+  const [stats, setStats] = useState({ total: 0, normal: 0, anomaly: 0, uncertain: 0, queueSize: 0 });
+  const [cascadeStats, setCascadeStats] = useState<api.CascadeQueueStats | null>(null);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -96,7 +123,7 @@ export default function LabelPage() {
         const res = await fetch(`${API_URL}/categories`);
         if (res.ok) {
           const data = await res.json();
-          setCategories(data.categories || []);
+          setCategories(['cascade', ...(data.categories || [])]);
         }
       } catch (e) {
         console.error('Failed to fetch categories');
@@ -105,44 +132,55 @@ export default function LabelPage() {
     fetchCategories();
   }, []);
 
-  // Fetch samples for labeling
+  // Fetch cascade queue or standard samples
   useEffect(() => {
     const fetchSamples = async () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${API_URL}/labeling/queue?category=${selectedCategory}&limit=50`);
-        if (res.ok) {
-          const data = await res.json();
-          setSamples(data.samples || []);
-          setCurrentIndex(0);
-          setBoundingBoxes([]);
+        if (selectedCategory === 'cascade') {
+          // Fetch from cascade queue
+          setIsCascadeMode(true);
+          const response = await api.fetchAnnotationQueue(50);
+          if (response.success) {
+            setSamples(response.queue as unknown as Sample[]);
+            setCurrentIndex(0);
+            setBoundingBoxes([]);
+            setStats(prev => ({
+              ...prev,
+              queueSize: response.stats.pending
+            }));
+            
+            // Fetch cascade stats
+            try {
+              const cascadeStatsResponse = await api.getCascadeStats();
+              setCascadeStats(cascadeStatsResponse);
+            } catch (e) {
+              console.error('Failed to fetch cascade stats');
+            }
+          }
         } else {
-          setError('Failed to load samples');
+          // Fetch standard labeling queue
+          setIsCascadeMode(false);
+          const res = await fetch(`${API_URL}/labeling/queue?category=${selectedCategory}&limit=50`);
+          if (res.ok) {
+            const data = await res.json();
+            setSamples(data.samples || []);
+            setCurrentIndex(0);
+            setBoundingBoxes([]);
+          } else {
+            setError('Failed to load samples');
+          }
         }
       } catch (e) {
         setError('Cannot connect to backend');
+        console.error(e);
       } finally {
         setLoading(false);
       }
     };
 
-    const fetchStats = async () => {
-      try {
-        const res = await fetch(`${API_URL}/labeling/stats?category=${selectedCategory}`);
-        if (res.ok) {
-          const data = await res.json();
-          setStats(data);
-        }
-      } catch (e) {
-        console.error('Failed to fetch stats');
-      }
-    };
-
-    if (selectedCategory) {
-      fetchSamples();
-      fetchStats();
-    }
+    fetchSamples();
   }, [selectedCategory]);
 
   // Draw canvas
@@ -212,23 +250,24 @@ export default function LabelPage() {
       const color = category?.color || '#ffffff';
       
       ctx.strokeStyle = color;
-      ctx.lineWidth = selectedBoxId === box.id ? 3 : 2;
+      ctx.lineWidth = selectedBoxId === box.id ? 2 : 1.5;
       ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-      // Draw label
+      // Draw label background
       ctx.fillStyle = color;
-      ctx.fillRect(box.x, box.y - 20, ctx.measureText(box.defect_type).width + 10, 20);
+      ctx.fillRect(box.x, box.y - 18, ctx.measureText(box.defect_type).width + 8, 18);
+      // Draw label text
       ctx.fillStyle = '#ffffff';
-      ctx.font = '12px sans-serif';
-      ctx.fillText(box.defect_type, box.x + 5, box.y - 6);
+      ctx.font = '10px monospace';
+      ctx.fillText(box.defect_type.toUpperCase(), box.x + 4, box.y - 5);
     });
 
     // Draw current drawing box
     if (currentBox && drawStart) {
       const category = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
       ctx.strokeStyle = category?.color || '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
       ctx.strokeRect(
         currentBox.x || 0,
         currentBox.y || 0,
@@ -310,37 +349,71 @@ export default function LabelPage() {
     if (!currentSample) return;
 
     try {
-      const annotation: Annotation = {
-        image_id: currentSample.image_id,
-        label,
-        bounding_boxes: boundingBoxes,
-        defect_types: [...new Set(boundingBoxes.map(b => b.defect_type))],
-        notes,
-        labeled_by: 'expert',
-        timestamp: new Date().toISOString(),
-      };
+      if (isCascadeMode) {
+        // Use cascade submission endpoint
+        const defectTypes = Array.from(new Set(boundingBoxes.map(b => b.defect_type)));
+        const submission: api.CascadeAnnotationSubmission = {
+          image_id: currentSample.image_id,
+          label: label === 'uncertain' ? 'anomaly' : label,  // Treat uncertain as anomaly
+          bounding_boxes: boundingBoxes,
+          defect_types: defectTypes,
+          notes
+        };
 
-      const res = await fetch(`${API_URL}/labeling/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: selectedCategory, annotation }),
-      });
+        const result = await api.submitCascadeAnnotation(submission);
+        if (result.success) {
+          // Move to next sample
+          if (currentIndex < samples.length - 1) {
+            setCurrentIndex(currentIndex + 1);
+            setBoundingBoxes([]);
+            setNotes('');
+          } else {
+            // Reload queue to get new items
+            const response = await api.fetchAnnotationQueue(50);
+            if (response.success && response.queue.length > 0) {
+              setSamples(response.queue as unknown as Sample[]);
+              setCurrentIndex(0);
+              setBoundingBoxes([]);
+            } else {
+              setError('No more items in cascade queue');
+            }
+          }
+        }
+      } else {
+        // Use standard labeling endpoint
+        const annotation: Annotation = {
+          image_id: currentSample.image_id,
+          label,
+          bounding_boxes: boundingBoxes,
+          defect_types: Array.from(new Set(boundingBoxes.map(b => b.defect_type))),
+          notes,
+          labeled_by: 'expert',
+          timestamp: new Date().toISOString(),
+        };
 
-      if (res.ok) {
-        // Move to next sample
-        if (currentIndex < samples.length - 1) {
-          setCurrentIndex(currentIndex + 1);
-          setBoundingBoxes([]);
-          setNotes('');
-          setStats(prev => ({
-            ...prev,
-            total: prev.total + 1,
-            [label]: prev[label] + 1,
-          }));
+        const res = await fetch(`${API_URL}/labeling/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: selectedCategory, annotation }),
+        });
+
+        if (res.ok) {
+          // Move to next sample
+          if (currentIndex < samples.length - 1) {
+            setCurrentIndex(currentIndex + 1);
+            setBoundingBoxes([]);
+            setNotes('');
+            setStats(prev => ({
+              ...prev,
+              total: prev.total + 1,
+              [label]: prev[label === 'uncertain' ? 'uncertain' : label] + 1,
+            }));
+          }
         }
       }
     } catch (e) {
-      setError('Failed to submit annotation');
+      setError(`Failed to submit annotation: ${e}`);
+      console.error(e);
     }
   };
 
@@ -400,358 +473,420 @@ export default function LabelPage() {
   }, [currentIndex, samples.length, boundingBoxes, selectedBoxId, showHeatmap]);
 
   const progressPercent = samples.length > 0 ? ((currentIndex + 1) / samples.length) * 100 : 0;
+  
+  // Try to cleanly get VLM reasoning
+  const vlmReasoning = currentSample?.metadata?.vlm_reasoning || (currentSample as any)?.vlm_reasoning || "VLM analysis unavailable.";
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white">
-      {/* Header */}
-      <header className="border-b border-slate-700 bg-slate-800/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-full mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <Link href="/" className="flex items-center space-x-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+    <div className="h-screen w-screen bg-zinc-950 text-zinc-300 flex flex-col overflow-hidden font-sans">
+      {/* Header - Professional dark with crisp borders */}
+      <header className="h-14 bg-zinc-950 border-b border-zinc-800 flex items-center px-6 justify-between flex-shrink-0">
+        <div className="flex items-center space-x-4">
+          <Link href="/" className="flex items-center space-x-2 hover:text-indigo-400 transition-colors">
+            <Activity className="w-5 h-5 text-indigo-500" />
+            <span className="font-bold tracking-tight text-white">RETINA</span>
+          </Link>
+          <div className="w-px h-5 bg-zinc-800" />
+          <h1 className="text-xs font-semibold tracking-widest text-zinc-400 uppercase">Annotation Studio</h1>
+        </div>
+
+        {/* Center: Progress & Queue Stats */}
+        <div className="flex items-center space-x-6 text-[11px] font-mono text-zinc-500 uppercase tracking-wide">
+          {samples.length > 0 && (
+            <>
+              <div className="flex items-center space-x-3">
+                <span>{currentIndex + 1} / {samples.length}</span>
+                <div className="w-32 h-1 bg-zinc-900 rounded-sm overflow-hidden">
+                  <div 
+                    className="h-full bg-indigo-500 transition-all"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
               </div>
-              <span className="font-bold">RETINA</span>
-            </Link>
-            <span className="text-slate-400">|</span>
-            <h1 className="text-lg font-semibold">Annotation Studio</h1>
-          </div>
+              
+              {isCascadeMode && (
+                <>
+                  <div className="w-px h-3 bg-zinc-800" />
+                  <div className="flex items-center space-x-2">
+                    <span className="w-1.5 h-1.5 bg-amber-500 rounded-sm" />
+                    <span>Queue: {stats.queueSize}</span>
+                  </div>
+                  {cascadeStats && (
+                    <div className="flex items-center space-x-2">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-sm" />
+                      <span>Labeled: {cascadeStats.labeled}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
 
-          {/* Category Selector */}
-          <div className="flex items-center space-x-4">
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm"
-            >
-              {categories.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-
-            {/* Progress */}
-            <div className="flex items-center space-x-2">
-              <span className="text-sm text-slate-400">
-                {currentIndex + 1} / {samples.length}
-              </span>
-              <div className="w-32 h-2 bg-slate-700 rounded-full">
-                <div 
-                  className="h-2 bg-blue-500 rounded-full transition-all"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Stats */}
-          <div className="flex items-center space-x-4 text-sm">
-            <div className="flex items-center space-x-1">
-              <span className="w-2 h-2 rounded-full bg-green-500"></span>
-              <span>{stats.normal} Normal</span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <span className="w-2 h-2 rounded-full bg-red-500"></span>
-              <span>{stats.anomaly} Anomaly</span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-              <span>{stats.uncertain} Uncertain</span>
-            </div>
-          </div>
+        {/* Right: Category selector */}
+        <div className="flex items-center space-x-3">
+          <select
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value)}
+            className="px-3 py-1.5 bg-zinc-900 border border-zinc-700 rounded-sm text-xs font-mono focus:outline-none focus:border-indigo-500 transition-colors text-zinc-300"
+          >
+            {categories.map(cat => (
+              <option key={cat} value={cat} className="bg-zinc-950">{cat.toUpperCase()}</option>
+            ))}
+          </select>
         </div>
       </header>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-[calc(100vh-60px)]">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-        </div>
-      ) : error ? (
-        <div className="flex items-center justify-center h-[calc(100vh-60px)]">
-          <div className="text-center">
-            <p className="text-red-400 mb-4">{error}</p>
+      {/* Main Content Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {loading ? (
+          <div className="w-full flex flex-col items-center justify-center bg-zinc-950">
+            <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-4" />
+            <p className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">Connecting to Pipeline...</p>
+          </div>
+        ) : error ? (
+          <div className="w-full flex flex-col items-center justify-center bg-zinc-950">
+            <AlertTriangle className="w-8 h-8 text-red-500 mb-4" />
+            <p className="text-sm text-zinc-300 font-mono mb-6">{error}</p>
             <button 
               onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-blue-500 rounded-lg hover:bg-blue-600"
+              className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-sm text-[11px] font-mono uppercase tracking-widest transition-colors"
             >
-              Retry
+              Retry Connection
             </button>
           </div>
-        </div>
-      ) : samples.length === 0 ? (
-        <div className="flex items-center justify-center h-[calc(100vh-60px)]">
-          <div className="text-center">
-            <div className="text-6xl mb-4">📭</div>
-            <p className="text-slate-400 mb-4">No samples available for labeling</p>
-            <p className="text-sm text-slate-500">Train PatchCore first to generate uncertain samples</p>
-            <Link href="/" className="mt-4 inline-block px-4 py-2 bg-blue-500 rounded-lg hover:bg-blue-600">
-              Go to Dashboard
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <div className="flex h-[calc(100vh-60px)]">
-          {/* Left Sidebar - Tools */}
-          <div className="w-16 bg-slate-800 border-r border-slate-700 flex flex-col items-center py-4 space-y-2">
-            <button
-              onClick={() => setActiveTool('select')}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition ${
-                activeTool === 'select' ? 'bg-blue-500' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
-              title="Select (V)"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setActiveTool('box')}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition ${
-                activeTool === 'box' ? 'bg-blue-500' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
-              title="Bounding Box (B)"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 010 2H6v3a1 1 0 01-2 0V5zM4 13a1 1 0 011 1v3h3a1 1 0 010 2H5a1 1 0 01-1-1v-4a1 1 0 011-1zM16 4h3a1 1 0 011 1v4a1 1 0 01-2 0V6h-2a1 1 0 010-2zM19 13a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h3v-3a1 1 0 011-1z" />
-              </svg>
-            </button>
-
-            <div className="flex-1" />
-
-            {/* Zoom controls */}
-            <button
-              onClick={() => setZoom(Math.min(zoom + 0.25, 3))}
-              className="w-10 h-10 rounded-lg bg-slate-700 hover:bg-slate-600 flex items-center justify-center"
-              title="Zoom In"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setZoom(Math.max(zoom - 0.25, 0.5))}
-              className="w-10 h-10 rounded-lg bg-slate-700 hover:bg-slate-600 flex items-center justify-center"
-              title="Zoom Out"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" />
-              </svg>
-            </button>
-            <span className="text-xs text-slate-400">{Math.round(zoom * 100)}%</span>
-          </div>
-
-          {/* Main Canvas Area */}
-          <div className="flex-1 flex flex-col bg-slate-900">
-            {/* Toolbar */}
-            <div className="h-12 bg-slate-800 border-b border-slate-700 flex items-center px-4 space-x-4">
-              <button
-                onClick={() => setShowHeatmap(!showHeatmap)}
-                className={`px-3 py-1.5 rounded text-sm flex items-center space-x-2 transition ${
-                  showHeatmap ? 'bg-purple-500' : 'bg-slate-700 hover:bg-slate-600'
-                }`}
-              >
-                <span>🔥</span>
-                <span>Heatmap (H)</span>
-              </button>
-              
-              <div className="h-6 w-px bg-slate-600" />
-              
-              <span className="text-sm text-slate-400">
-                Anomaly Score: 
-                <span className={`ml-2 font-semibold ${
-                  (currentSample?.anomaly_score || 0) > 0.5 ? 'text-red-400' : 'text-green-400'
-                }`}>
-                  {((currentSample?.anomaly_score || 0) * 100).toFixed(1)}%
-                </span>
-              </span>
-
-              <div className="flex-1" />
-
-              <span className="text-sm text-slate-400">
-                Boxes: <span className="font-semibold">{boundingBoxes.length}</span>
-              </span>
-            </div>
-
-            {/* Canvas Container */}
-            <div 
-              ref={containerRef}
-              className="flex-1 overflow-auto flex items-center justify-center p-4"
-              style={{ backgroundColor: '#0f172a' }}
-            >
-              <canvas
-                ref={canvasRef}
-                className="border border-slate-600 rounded cursor-crosshair"
-                style={{ 
-                  transform: `scale(${zoom})`,
-                  transformOrigin: 'center center',
-                  maxWidth: '100%',
-                  maxHeight: '100%'
-                }}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-              />
-            </div>
-
-            {/* Bottom Action Bar */}
-            <div className="h-20 bg-slate-800 border-t border-slate-700 flex items-center justify-center space-x-6 px-4">
-              <button
-                onClick={() => submitAnnotation('normal')}
-                className="px-8 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-semibold flex items-center space-x-2 transition"
-              >
-                <span>✅</span>
-                <span>Normal</span>
-                <kbd className="ml-2 px-2 py-0.5 bg-green-800 rounded text-xs">N</kbd>
-              </button>
-              
-              <button
-                onClick={() => submitAnnotation('anomaly')}
-                className="px-8 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-semibold flex items-center space-x-2 transition"
-              >
-                <span>⚠️</span>
-                <span>Anomaly</span>
-                <kbd className="ml-2 px-2 py-0.5 bg-red-800 rounded text-xs">A</kbd>
-              </button>
-              
-              <button
-                onClick={() => submitAnnotation('uncertain')}
-                className="px-8 py-3 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-semibold flex items-center space-x-2 transition"
-              >
-                <span>❓</span>
-                <span>Uncertain</span>
-                <kbd className="ml-2 px-2 py-0.5 bg-yellow-800 rounded text-xs">U</kbd>
-              </button>
-
-              <div className="h-10 w-px bg-slate-600" />
-
-              {/* Navigation */}
-              <button
-                onClick={() => { setCurrentIndex(Math.max(0, currentIndex - 1)); setBoundingBoxes([]); }}
-                disabled={currentIndex === 0}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg flex items-center space-x-1"
-              >
-                <span>←</span>
-                <span>Prev</span>
-              </button>
-              <button
-                onClick={() => { setCurrentIndex(Math.min(samples.length - 1, currentIndex + 1)); setBoundingBoxes([]); }}
-                disabled={currentIndex === samples.length - 1}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg flex items-center space-x-1"
-              >
-                <span>Next</span>
-                <span>→</span>
-              </button>
+        ) : samples.length === 0 ? (
+          <div className="w-full flex flex-col items-center justify-center bg-zinc-950">
+            <div className="text-center">
+              <Inbox className="w-12 h-12 text-zinc-800 mx-auto mb-6" />
+              <p className="text-sm font-medium text-zinc-300 mb-2">No Samples Available</p>
+              <p className="text-[11px] font-mono text-zinc-500 mb-8 max-w-sm mx-auto">
+                The inference cascade queue is currently empty. Production edge models are monitoring live streams without uncertainty.
+              </p>
+              <Link href="/" className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-sm text-[11px] font-mono uppercase tracking-widest transition-colors inline-block">
+                Return to Dashboard
+              </Link>
             </div>
           </div>
-
-          {/* Right Sidebar - Defect Categories & Annotations */}
-          <div className="w-72 bg-slate-800 border-l border-slate-700 flex flex-col">
-            {/* Defect Categories */}
-            <div className="p-4 border-b border-slate-700">
-              <h3 className="text-sm font-semibold text-slate-300 mb-3">Defect Type</h3>
-              <div className="space-y-1">
-                {DEFECT_CATEGORIES.map((cat) => (
+        ) : (
+          <>
+            {/* COLUMN 1: LEFT SIDEBAR - Tools & Defect Classes */}
+            <div className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col flex-shrink-0">
+              {/* Tools Section */}
+              <div className="p-5 border-b border-zinc-800">
+                <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-4">Tools</h3>
+                <div className="space-y-1.5">
                   <button
-                    key={cat.name}
-                    onClick={() => setSelectedDefect(cat.name)}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm flex items-center justify-between transition ${
-                      selectedDefect === cat.name
-                        ? 'bg-slate-600 ring-2 ring-blue-500'
-                        : 'bg-slate-700 hover:bg-slate-600'
+                    onClick={() => setActiveTool('select')}
+                    className={`w-full px-3 py-2 rounded-sm text-xs font-medium flex items-center transition-colors ${
+                      activeTool === 'select' 
+                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30' 
+                        : 'bg-transparent text-zinc-400 border border-transparent hover:bg-zinc-800 hover:border-zinc-700'
                     }`}
                   >
-                    <div className="flex items-center space-x-2">
-                      <span 
-                        className="w-3 h-3 rounded"
-                        style={{ backgroundColor: cat.color }}
-                      />
-                      <span className="capitalize">{cat.name.replace('_', ' ')}</span>
-                    </div>
-                    <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-xs">{cat.shortcut}</kbd>
+                    <MousePointer2 className="w-3.5 h-3.5 mr-2" />
+                    <span>Select Area</span>
+                    <kbd className="ml-auto text-[9px] font-mono text-zinc-500 border border-zinc-700 rounded-sm px-1.5 py-0.5">S</kbd>
                   </button>
-                ))}
+                  
+                  <button
+                    onClick={() => setActiveTool('box')}
+                    className={`w-full px-3 py-2 rounded-sm text-xs font-medium flex items-center transition-colors ${
+                      activeTool === 'box' 
+                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30' 
+                        : 'bg-transparent text-zinc-400 border border-transparent hover:bg-zinc-800 hover:border-zinc-700'
+                    }`}
+                  >
+                    <SquareDashed className="w-3.5 h-3.5 mr-2" />
+                    <span>Bounding Box</span>
+                    <kbd className="ml-auto text-[9px] font-mono text-zinc-500 border border-zinc-700 rounded-sm px-1.5 py-0.5">B</kbd>
+                  </button>
+                </div>
+              </div>
+
+              {/* Defect Classes Section */}
+              <div className="flex-1 overflow-auto p-5">
+                <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-4">Ontology Classes</h3>
+                <div className="space-y-1.5">
+                  {DEFECT_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.name}
+                      onClick={() => setSelectedDefect(cat.name)}
+                      className={`w-full px-3 py-2 rounded-sm text-xs font-medium flex items-center transition-colors border-l-2 ${
+                        selectedDefect === cat.name
+                          ? 'bg-zinc-800 text-zinc-100'
+                          : 'bg-transparent text-zinc-400 hover:bg-zinc-800/50'
+                      }`}
+                      style={{ borderLeftColor: cat.color }}
+                    >
+                      <span className="flex-1 text-left uppercase tracking-wide">{cat.name.replace('_', ' ')}</span>
+                      <kbd className="text-[9px] font-mono text-zinc-500 border border-zinc-700 rounded-sm px-1.5 py-0.5">{cat.shortcut}</kbd>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Keyboard Shortcuts */}
+              <div className="p-5 border-t border-zinc-800 bg-zinc-950/30">
+                <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-3">Hotkeys</h3>
+                <div className="grid grid-cols-2 gap-y-2 gap-x-1 text-[10px] font-mono text-zinc-500">
+                  <div className="flex justify-between border-b border-zinc-800/50 pb-1"><span>Normal</span> <kbd>N</kbd></div>
+                  <div className="flex justify-between border-b border-zinc-800/50 pb-1 pl-2"><span>Anomaly</span> <kbd>A</kbd></div>
+                  <div className="flex justify-between border-b border-zinc-800/50 pb-1"><span>Unclear</span> <kbd>U</kbd></div>
+                  <div className="flex justify-between border-b border-zinc-800/50 pb-1 pl-2"><span>Heatmap</span> <kbd>H</kbd></div>
+                  <div className="flex justify-between"><span>Delete</span> <kbd>DEL</kbd></div>
+                  <div className="flex justify-between pl-2"><span>Navigate</span> <kbd>←→</kbd></div>
+                </div>
               </div>
             </div>
 
-            {/* Annotations List */}
-            <div className="flex-1 p-4 overflow-auto">
-              <h3 className="text-sm font-semibold text-slate-300 mb-3">Annotations ({boundingBoxes.length})</h3>
-              {boundingBoxes.length === 0 ? (
-                <p className="text-sm text-slate-500">
-                  Draw bounding boxes around defects
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {boundingBoxes.map((box, idx) => {
-                    const cat = DEFECT_CATEGORIES.find(c => c.name === box.defect_type);
-                    return (
-                      <div
-                        key={box.id}
-                        onClick={() => setSelectedBoxId(box.id)}
-                        className={`p-2 rounded-lg cursor-pointer transition ${
-                          selectedBoxId === box.id
-                            ? 'bg-slate-600 ring-2 ring-blue-500'
-                            : 'bg-slate-700 hover:bg-slate-600'
+            {/* COLUMN 2: CENTER - Canvas Workspace */}
+            <div className="flex-1 bg-[#121214] flex flex-col relative overflow-hidden" style={{
+              backgroundImage: 'linear-gradient(0deg, rgba(39, 39, 42, 0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(39, 39, 42, 0.4) 1px, transparent 1px)',
+              backgroundSize: '40px 40px'
+            }}>
+              {/* Canvas Container */}
+              <div 
+                ref={containerRef}
+                className="flex-1 overflow-auto flex items-center justify-center p-8"
+              >
+                <div className="relative inline-block shadow-2xl border border-zinc-700 bg-zinc-900">
+                  <canvas
+                    ref={canvasRef}
+                    className="block"
+                    style={{ 
+                      transform: `scale(${zoom})`,
+                      transformOrigin: 'center center',
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      cursor: activeTool === 'box' ? 'crosshair' : 'default'
+                    }}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                  />
+                </div>
+              </div>
+
+              {/* Bottom Floating Toolbar */}
+              <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-zinc-900 border border-zinc-700 rounded-sm px-2 py-1.5 flex items-center space-x-1 shadow-2xl">
+                <button
+                  onClick={() => setShowHeatmap(!showHeatmap)}
+                  className={`px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest font-semibold flex items-center space-x-1.5 transition-colors ${
+                    showHeatmap 
+                      ? 'bg-indigo-500/20 text-indigo-300' 
+                      : 'bg-transparent text-zinc-400 hover:bg-zinc-800'
+                  }`}
+                >
+                  <div className="w-2.5 h-2.5 bg-gradient-to-r from-blue-500 via-emerald-500 to-red-500 rounded-sm" />
+                  <span>Heatmap Overlays</span>
+                </button>
+
+                <div className="w-px h-4 bg-zinc-700 mx-2" />
+
+                <button
+                  onClick={() => setZoom(Math.max(zoom - 0.25, 0.5))}
+                  className="p-1.5 rounded-sm hover:bg-zinc-800 text-zinc-400 transition-colors"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <div className="w-12 text-center text-[11px] font-mono text-zinc-500">
+                  {Math.round(zoom * 100)}%
+                </div>
+                <button
+                  onClick={() => setZoom(Math.min(zoom + 0.25, 3))}
+                  className="p-1.5 rounded-sm hover:bg-zinc-800 text-zinc-400 transition-colors"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setZoom(1)}
+                  className="p-1.5 rounded-sm hover:bg-zinc-800 text-zinc-400 transition-colors ml-1"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* COLUMN 3: RIGHT SIDEBAR - Sample Intelligence & Queue */}
+            <div className="w-80 bg-zinc-900 border-l border-zinc-800 flex flex-col flex-shrink-0">
+              {/* Cascade Routing Info */}
+              {isCascadeMode && currentSample && (
+                <div className="p-5 border-b border-zinc-800">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Inference Telemetry</h3>
+                    <span className="px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm text-[10px] font-mono text-zinc-400 uppercase tracking-widest">
+                      {currentSample.routing_case.split('_').slice(-1)[0]}
+                    </span>
+                  </div>
+                  
+                  {/* Edge Net Score */}
+                  <div className="mb-4 bg-zinc-950 border border-zinc-800 rounded-sm p-3">
+                    <div className="flex items-end justify-between mb-2">
+                      <span className="text-[11px] font-medium text-zinc-400">BGAD EDGE SCORE</span>
+                      <span className={`text-[11px] font-mono font-bold ${
+                        currentSample.bgad_score > 0.7 ? 'text-red-400' : 
+                        currentSample.bgad_score > 0.4 ? 'text-amber-400' : 
+                        'text-emerald-400'
+                      }`}>
+                        {currentSample.bgad_score.toFixed(4)}
+                      </span>
+                    </div>
+                    <div className="w-full h-1 bg-zinc-800 rounded-sm overflow-hidden">
+                      <div 
+                        className={`h-full opacity-80 ${
+                          currentSample.bgad_score > 0.7 ? 'bg-red-500' : 
+                          currentSample.bgad_score > 0.4 ? 'bg-amber-400' : 
+                          'bg-emerald-500'
                         }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-2">
-                            <span 
-                              className="w-2 h-2 rounded"
-                              style={{ backgroundColor: cat?.color }}
-                            />
-                            <span className="text-sm capitalize">{box.defect_type.replace('_', ' ')}</span>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setBoundingBoxes(boundingBoxes.filter(b => b.id !== box.id));
-                            }}
-                            className="text-red-400 hover:text-red-300"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
-                        </div>
-                        <div className="text-xs text-slate-400 mt-1">
-                          {Math.round(box.x)}, {Math.round(box.y)} • {Math.round(box.width)}×{Math.round(box.height)}
-                        </div>
-                      </div>
-                    );
-                  })}
+                        style={{ width: `${Math.min(currentSample.bgad_score * 100, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* VLM Fallback Reasoning */}
+                  <div className="bg-zinc-950 border border-indigo-500/20 rounded-sm p-3 relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500/50" />
+                    <div className="flex items-end justify-between mb-2 pl-2">
+                      <span className="text-[11px] font-medium text-indigo-400 uppercase tracking-wide">GPT-4V Fallback Analysis</span>
+                      <span className="text-[10px] font-mono text-zinc-500">Zero-Shot</span>
+                    </div>
+                    <div className="pl-2">
+                      <p className="text-[11px] leading-relaxed text-zinc-400 font-mono whitespace-pre-wrap">
+                        {vlmReasoning}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-4 flex flex-col">
+                    <span className="text-[10px] text-zinc-600 uppercase tracking-widest mb-1">Blob Target ID</span>
+                    <span className="text-[10px] font-mono text-zinc-500 truncate">{currentSample.image_id}</span>
+                  </div>
                 </div>
               )}
-            </div>
 
-            {/* Notes */}
-            <div className="p-4 border-t border-slate-700">
-              <h3 className="text-sm font-semibold text-slate-300 mb-2">Notes</h3>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Add notes about this sample..."
-                className="w-full h-20 bg-slate-700 border border-slate-600 rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
+              {/* Annotations List */}
+              <div className="flex-1 overflow-auto p-5 border-b border-zinc-800">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Declared Regions</h3>
+                  <span className="text-[10px] font-mono bg-zinc-800 px-1.5 py-0.5 rounded-sm">{boundingBoxes.length}</span>
+                </div>
+                
+                {boundingBoxes.length === 0 ? (
+                  <div className="h-24 border border-dashed border-zinc-700 rounded-sm flex items-center justify-center bg-zinc-950/50">
+                    <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No Bounding Boxes DrawN</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {boundingBoxes.map((box) => {
+                      const cat = DEFECT_CATEGORIES.find(c => c.name === box.defect_type);
+                      return (
+                        <div
+                          key={box.id}
+                          onClick={() => setSelectedBoxId(box.id)}
+                          className={`p-3 rounded-sm cursor-pointer border transition-colors ${
+                            selectedBoxId === box.id
+                              ? 'bg-zinc-800 border-zinc-600'
+                              : 'bg-zinc-950 border-zinc-800 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center space-x-2">
+                              <div 
+                                className="w-1.5 h-1.5 rounded-sm" 
+                                style={{ backgroundColor: cat?.color }}
+                              />
+                              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-300">{box.defect_type.replace('_', ' ')}</span>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setBoundingBoxes(boundingBoxes.filter(b => b.id !== box.id));
+                              }}
+                              className="text-zinc-600 hover:text-red-400 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="text-[10px] text-zinc-500 font-mono bg-zinc-900 border border-zinc-800 rounded-sm px-2 py-1 inline-block">
+                            X:{Math.round(box.x)} Y:{Math.round(box.y)} • W:{Math.round(box.width)} H:{Math.round(box.height)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
-            {/* Keyboard Shortcuts */}
-            <div className="p-4 border-t border-slate-700 bg-slate-850">
-              <h3 className="text-sm font-semibold text-slate-300 mb-2">Shortcuts</h3>
-              <div className="grid grid-cols-2 gap-1 text-xs text-slate-400">
-                <div><kbd className="bg-slate-700 px-1 rounded">N</kbd> Normal</div>
-                <div><kbd className="bg-slate-700 px-1 rounded">A</kbd> Anomaly</div>
-                <div><kbd className="bg-slate-700 px-1 rounded">U</kbd> Uncertain</div>
-                <div><kbd className="bg-slate-700 px-1 rounded">H</kbd> Heatmap</div>
-                <div><kbd className="bg-slate-700 px-1 rounded">Del</kbd> Delete</div>
-                <div><kbd className="bg-slate-700 px-1 rounded">←→</kbd> Navigate</div>
+              {/* Action Area */}
+              <div className="p-5 flex-shrink-0 bg-zinc-950">
+                <div className="mb-4">
+                   <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Enter manual override notes..."
+                    className="w-full h-16 bg-zinc-900 border border-zinc-800 rounded-sm p-3 text-xs resize-none focus:outline-none focus:border-indigo-500/50 text-zinc-300 font-mono"
+                  />
+                </div>
+
+                <div className="flex gap-2 mb-3">
+                  <button
+                    onClick={() => { setCurrentIndex(Math.max(0, currentIndex - 1)); setBoundingBoxes([]); }}
+                    disabled={currentIndex === 0}
+                    className="flex-1 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 rounded-sm hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-mono text-[10px] uppercase tracking-widest flex items-center justify-center"
+                  >
+                    <ChevronLeft className="w-3 h-3 mr-1" />
+                    Prev
+                  </button>
+                  <button
+                    onClick={() => { setCurrentIndex(Math.min(samples.length - 1, currentIndex + 1)); setBoundingBoxes([]); }}
+                    disabled={currentIndex === samples.length - 1}
+                    className="flex-1 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 rounded-sm hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-mono text-[10px] uppercase tracking-widest flex items-center justify-center"
+                  >
+                    Next
+                    <ChevronRight className="w-3 h-3 ml-1" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  <button
+                    onClick={() => submitAnnotation('normal')}
+                    className="py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-sm font-semibold text-[10px] uppercase tracking-widest transition-colors flex flex-col items-center justify-center space-y-1"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Approve</span>
+                  </button>
+                  
+                  <button
+                    onClick={() => submitAnnotation('uncertain')}
+                    className="py-2.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-400 rounded-sm font-semibold text-[10px] uppercase tracking-widest transition-colors flex flex-col items-center justify-center space-y-1"
+                  >
+                    <HelpCircle className="w-4 h-4" />
+                    <span>Unclear</span>
+                  </button>
+
+                  <button
+                    onClick={() => submitAnnotation('anomaly')}
+                    className="py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-sm font-semibold text-[10px] uppercase tracking-widest transition-colors flex flex-col items-center justify-center space-y-1"
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Reject</span>
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => submitAnnotation('anomaly')}
+                  className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-sm font-bold text-xs uppercase tracking-widest text-white transition-colors flex items-center justify-center space-x-2"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Submit Override Data</span>
+                </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * RETINA Dashboard - Home Page
  * ============================
@@ -8,30 +10,58 @@
  * - Processing statistics
  * - Active learning progress
  *
- * This is a server component that fetches data on each request.
+ * Client component that fetches data on mount.
  */
 
-import { getSystemStatus, getHealth, SystemStatusResponse } from '@/lib/api';
+import { useState, useEffect } from 'react';
+import { getHealth, HealthResponse } from '@/lib/api';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-export default async function DashboardPage() {
-  let systemStatus: SystemStatusResponse | null = null;
-  let isHealthy = false;
-  let error: string | null = null;
+interface StatusData {
+  pipeline?: Record<string, any>;
+  labeling?: Record<string, any>;
+  models?: Record<string, any>;
+}
 
-  try {
-    // Fetch system status from backend
-    const [healthResponse, statusResponse] = await Promise.all([
-      getHealth().catch(() => null),
-      getSystemStatus().catch(() => null),
-    ]);
+export default function DashboardPage() {
+  const [isHealthy, setIsHealthy] = useState(false);
+  const [statusData, setStatusData] = useState<StatusData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-    isHealthy = healthResponse?.status === 'healthy';
-    systemStatus = statusResponse;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to connect to backend';
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [healthResponse, statusResponse] = await Promise.all([
+          getHealth().catch(() => null),
+          fetch(`${API_URL}/status`).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+
+        setIsHealthy(healthResponse?.status === 'healthy');
+        setStatusData(statusResponse);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to connect to backend');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  const labelingStats = statusData?.labeling || {};
+  const modelInfo = statusData?.models || {};
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <div className="animate-spin w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="text-gray-600 dark:text-gray-400">Connecting to backend...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -56,7 +86,7 @@ export default async function DashboardPage() {
             <span className="ml-2 text-red-700 dark:text-red-300">{error}</span>
           </div>
           <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-            Make sure the backend is running: <code>docker compose up</code>
+            Make sure the backend is running: <code>python -m src.backend.app</code>
           </p>
         </div>
       )}
@@ -71,40 +101,40 @@ export default async function DashboardPage() {
           color={isHealthy ? 'green' : 'red'}
         />
 
-        {/* Current Stage */}
+        {/* Pipeline Stage */}
         <StatusCard
-          title="Pipeline Stage"
-          value={`Stage ${systemStatus?.current_stage ?? '-'}`}
-          icon={systemStatus?.current_stage === 2 ? '🎯' : '🔍'}
+          title="Pipeline"
+          value={modelInfo.bgad ? 'BGAD Active' : 'PatchCore Only'}
+          icon={modelInfo.bgad ? '🎯' : '🔍'}
           subtitle={
-            systemStatus?.current_stage === 2
-              ? 'Supervised Classification'
-              : 'Unsupervised Detection'
+            modelInfo.bgad
+              ? 'Cascade inference enabled'
+              : 'Unsupervised detection'
           }
           color="blue"
         />
 
-        {/* Jobs Processed */}
+        {/* Labels Completed */}
         <StatusCard
-          title="Jobs Completed"
-          value={systemStatus?.stats.jobs_completed?.toLocaleString() ?? '-'}
+          title="Labeling Progress"
+          value={`${labelingStats.completed ?? 0}`}
           icon="📊"
-          subtitle={`${systemStatus?.stats.queue_length ?? 0} in queue`}
+          subtitle={`${labelingStats.pending ?? 0} pending`}
           color="purple"
         />
 
-        {/* Labels Collected */}
+        {/* Queue Size */}
         <StatusCard
-          title="Labels Collected"
-          value={systemStatus?.stats.labels_collected?.toLocaleString() ?? '-'}
+          title="Queue Size"
+          value={`${labelingStats.total ?? 0}`}
           icon="🏷️"
-          subtitle={`of ${systemStatus?.labels_for_stage2 ?? 100} for Stage 2`}
+          subtitle="Images in labeling queue"
           color="amber"
         />
       </div>
 
       {/* Active Learning Progress */}
-      <div className="card">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
         <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
           Active Learning Progress
         </h2>
@@ -113,100 +143,95 @@ export default async function DashboardPage() {
           {/* Progress Bar */}
           <div>
             <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400 mb-2">
-              <span>Progress to Stage 2</span>
+              <span>Labeling Completion</span>
               <span>
-                {systemStatus?.stats.labels_collected ?? 0} /{' '}
-                {systemStatus?.labels_for_stage2 ?? 100} labels
+                {labelingStats.completed ?? 0} / {labelingStats.total ?? 0} labeled
               </span>
             </div>
-            <div className="progress-bar">
+            <div className="w-full h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
-                className="progress-bar-fill"
-                style={{ width: `${systemStatus?.stage2_progress ?? 0}%` }}
+                className="h-full bg-blue-600 rounded-full transition-all"
+                style={{ width: `${labelingStats.progress_percent ?? 0}%` }}
               />
             </div>
           </div>
 
-          {/* Stage 2 Status */}
+          {/* Model Status */}
           <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
             <div>
               <p className="font-medium text-gray-900 dark:text-white">
-                Stage 2 (Supervised Learning)
+                BGAD (Supervised Learning)
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                {systemStatus?.stage2_available
-                  ? 'Push-pull contrastive model is active'
-                  : 'Collect more labels to enable supervised classification'}
+                {modelInfo.bgad
+                  ? 'Boundary-guided anomaly detection active'
+                  : 'Collect labeled data to enable BGAD training'}
               </p>
             </div>
             <div
-              className={`badge ${
-                systemStatus?.stage2_available ? 'badge-success' : 'badge-warning'
+              className={`px-3 py-1 rounded-full text-sm font-medium ${
+                modelInfo.bgad
+                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                  : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
               }`}
             >
-              {systemStatus?.stage2_available ? 'Available' : 'Locked'}
-            </div>
-          </div>
-
-          {/* Labeling Pool */}
-          <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
-            <div>
-              <p className="font-medium text-gray-900 dark:text-white">
-                Labeling Pool
-              </p>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Uncertain samples awaiting expert review
-              </p>
-            </div>
-            <div className="text-2xl font-bold text-blue-800">
-              {systemStatus?.stats.labeling_pool_size ?? 0}
+              {modelInfo.bgad ? 'Trained' : 'Pending'}
             </div>
           </div>
         </div>
       </div>
 
       {/* Model Information */}
-      <div className="card">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
         <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
           Active Models
         </h2>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Stage 1 Model */}
+          {/* PatchCore */}
           <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Stage 1 Model
               </span>
-              <span className="badge badge-info">Unsupervised</span>
+              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                Unsupervised
+              </span>
             </div>
             <p className="text-lg font-semibold text-gray-900 dark:text-white uppercase">
-              {systemStatus?.active_models.stage1_model ?? 'PatchCore'}
+              PatchCore
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
               Memory-bank based anomaly detection
             </p>
+            {Array.isArray(modelInfo.patchcore) && modelInfo.patchcore.length > 0 && (
+              <p className="text-xs text-gray-500 mt-2">
+                Categories: {modelInfo.patchcore.join(', ')}
+              </p>
+            )}
           </div>
 
-          {/* Stage 2 Model */}
+          {/* BGAD */}
           <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Stage 2 Model
               </span>
               <span
-                className={`badge ${
-                  systemStatus?.stage2_available ? 'badge-success' : 'badge-warning'
+                className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                  modelInfo.bgad
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                    : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
                 }`}
               >
-                {systemStatus?.stage2_available ? 'Active' : 'Pending'}
+                {modelInfo.bgad ? 'Active' : 'Pending'}
               </span>
             </div>
             <p className="text-lg font-semibold text-gray-900 dark:text-white uppercase">
-              {systemStatus?.active_models.stage2_model ?? 'Push-Pull'}
+              BGAD
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-              Contrastive learning classifier
+              Boundary-guided push-pull contrastive learning
             </p>
           </div>
         </div>
@@ -218,9 +243,9 @@ export default async function DashboardPage() {
           Pipeline Overview
         </h3>
         <p className="text-sm text-blue-800 dark:text-blue-300">
-          Two-stage pipeline: Stage 1 uses unsupervised methods (PatchCore, WinCLIP) for initial 
-          anomaly detection. As labels are collected, Stage 2 enables supervised classification 
-          with push-pull contrastive learning.
+          Four-stage cascade: BGAD screens images at the edge (Stage 1), uncertain cases route to
+          GPT-4V for zero-shot analysis (Stage 2), flagged images enter the annotation queue
+          (Stage 3), and nightly retrain fine-tunes BGAD with new labels (Stage 4).
         </p>
       </div>
     </div>

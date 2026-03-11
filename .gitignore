@@ -98,3 +98,8 @@ v1/
 models/
 data /
 shared/
+
+# Custom Additions
+MSVPD_Unified_Dataset/
+decospan_small/
+output/

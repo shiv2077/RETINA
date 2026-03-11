@@ -9,7 +9,7 @@ const nextConfig = {
   // Environment variables
   env: {
     // Default API URL (can be overridden at runtime)
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
   },
 
   // Experimental features

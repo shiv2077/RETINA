@@ -1,9 +1,11 @@
 """
 Labeling Service
 Roboflow-like annotation system for anomaly detection.
+Includes cascade-triggered active learning queue.
 """
 import json
 import shutil
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -235,13 +237,50 @@ class AnnotationStore:
 class LabelingService:
     """
     Service for managing the labeling workflow.
-    Integrates with PatchCore for active learning.
+    Integrates with PatchCore for active learning and Cascade inference.
+    
+    Features:
+    - Thread-safe queue operations (prevents race conditions)
+    - Cascade-triggered active learning (routes uncertain predictions)
+    - Persistent queue (survives service restarts)
     """
     
     def __init__(self, storage_path: Path):
         self.store = AnnotationStore(storage_path)
         self.labeling_queue: List[Dict] = []
+        self.queue_lock = threading.RLock()  # Thread-safe queue access
         self.session_id: Optional[str] = None
+        
+        # Cascade queue (separate from standard labeling queue)
+        self.cascade_queue_path = Path(storage_path) / "cascade_queue.json"
+        self.cascade_queue: List[Dict] = []
+        self._load_cascade_queue()
+    
+    def _load_cascade_queue(self):
+        """Load cascade queue from disk."""
+        try:
+            if self.cascade_queue_path.exists():
+                with open(self.cascade_queue_path, "r") as f:
+                    data = json.load(f)
+                    self.cascade_queue = data.get("queue", [])
+        except Exception as e:
+            print(f"Warning: Could not load cascade queue: {e}")
+            self.cascade_queue = []
+    
+    def _save_cascade_queue(self):
+        """Save cascade queue to disk (thread-safe)."""
+        try:
+            with self.queue_lock:
+                data = {
+                    "version": "1.0",
+                    "created_at": datetime.now().isoformat(),
+                    "queue_size": len(self.cascade_queue),
+                    "queue": self.cascade_queue
+                }
+                with open(self.cascade_queue_path, "w") as f:
+                    json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving cascade queue: {e}")
     
     def start_session(self, annotator: str = "expert") -> str:
         """Start a new labeling session."""
@@ -380,6 +419,229 @@ class LabelingService:
             "progress_percent": (completed / total * 100) if total > 0 else 0,
             "stats": self.store.get_stats()
         }
+    
+    # ========================================================================
+    # CASCADE QUEUE METHODS (Active Learning from Cascade Router)
+    # ========================================================================
+    
+    def add_to_cascade_queue(
+        self,
+        image_path: str,
+        bgad_score: float,
+        vlm_score: Optional[float] = None,
+        routing_case: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict:
+        """
+        Add image to cascade annotation queue.
+        Called when predict_with_cascade() returns requires_expert_labeling=True.
+        
+        Args:
+            image_path: Path to the image file
+            bgad_score: BGAD anomaly score (0-2.0)
+            vlm_score: VLM anomaly score if available (0-1.0)
+            routing_case: Routing case (A_confident_normal, B_confident_anomaly, C_uncertain_vlm_routed)
+            metadata: Additional metadata from cascade response
+        
+        Returns:
+            Queue item info
+        
+        Thread-safe: Yes (uses queue_lock)
+        """
+        with self.queue_lock:
+            # Check if already in queue
+            image_id = Path(image_path).stem if Path(image_path).exists() else str(uuid.uuid4().hex[:8])
+            for item in self.cascade_queue:
+                if item["image_id"] == image_id and item["status"] == "pending":
+                    # Already in queue, skip
+                    return {"success": False, "error": "Image already in queue", "image_id": image_id}
+            
+            # Create queue item
+            queue_item = {
+                "image_id": image_id,
+                "image_path": image_path,
+                "bgad_score": bgad_score,
+                "vlm_score": vlm_score,
+                "routing_case": routing_case or "unknown",
+                "status": "pending",
+                "created_at": datetime.now().isoformat(),
+                "source": "cascade_inference",
+                "metadata": metadata or {}
+            }
+            
+            # Add to queue (insert at front so most recent are first)
+            self.cascade_queue.insert(0, queue_item)
+            self._save_cascade_queue()
+            
+            return {
+                "success": True,
+                "image_id": image_id,
+                "queue_position": 0,
+                "queue_size": len(self.cascade_queue)
+            }
+    
+    def get_cascade_queue(self, limit: Optional[int] = None) -> Dict:
+        """
+        Fetch pending cascade annotations.
+        Called by frontend to populate annotation studio.
+        
+        Args:
+            limit: Max items to return (default: all pending)
+        
+        Returns:
+            Dictionary with queue items and stats
+        
+        Thread-safe: Yes (uses queue_lock)
+        """
+        with self.queue_lock:
+            pending = [item for item in self.cascade_queue if item["status"] == "pending"]
+            
+            if limit:
+                pending = pending[:limit]
+            
+            # Get queue stats
+            total = len(self.cascade_queue)
+            pending_count = sum(1 for item in self.cascade_queue if item["status"] == "pending")
+            labeled_count = sum(1 for item in self.cascade_queue if item["status"] == "labeled")
+            skipped_count = sum(1 for item in self.cascade_queue if item["status"] == "skipped")
+            
+            return {
+                "success": True,
+                "queue": pending,
+                "queue_size": len(pending),
+                "stats": {
+                    "total_in_queue": total,
+                    "pending": pending_count,
+                    "labeled": labeled_count,
+                    "skipped": skipped_count
+                }
+            }
+    
+    def mark_cascade_labeled(
+        self,
+        image_id: str,
+        label: str,
+        bounding_boxes: Optional[List[Dict]] = None,
+        defect_types: Optional[List[str]] = None,
+        notes: str = ""
+    ) -> Dict:
+        """
+        Mark cascade queue item as labeled and create annotation.
+        Called when user submits annotation in studio.
+        
+        Args:
+            image_id: Image ID
+            label: "normal" or "anomaly"
+            bounding_boxes: List of bbox dicts
+            defect_types: Defect type labels
+            notes: User notes
+        
+        Returns:
+            Submission result
+        
+        Thread-safe: Yes (uses queue_lock)
+        """
+        with self.queue_lock:
+            # Find in cascade queue
+            queue_item = None
+            for item in self.cascade_queue:
+                if item["image_id"] == image_id:
+                    queue_item = item
+                    break
+            
+            if not queue_item:
+                return {"success": False, "error": "Image not found in cascade queue"}
+            
+            # Create annotation
+            bboxes = []
+            if bounding_boxes:
+                for bb in bounding_boxes:
+                    bboxes.append(BoundingBox(
+                        x=bb["x"],
+                        y=bb["y"],
+                        width=bb["width"],
+                        height=bb["height"],
+                        defect_type=bb.get("defect_type", "other"),
+                        confidence=bb.get("confidence", 1.0)
+                    ))
+            
+            annotation = Annotation(
+                image_id=image_id,
+                image_path=queue_item["image_path"],
+                label=label,
+                defect_type=defect_types[0] if defect_types else None,
+                defect_types=defect_types or [],
+                bounding_boxes=bboxes,
+                anomaly_score=queue_item.get("bgad_score"),
+                confidence="high",
+                annotator=getattr(self, "annotator", "expert"),
+                notes=notes,
+                metadata={
+                    "session_id": self.session_id,
+                    "cascade_source": True,
+                    "bgad_score": queue_item.get("bgad_score"),
+                    "vlm_score": queue_item.get("vlm_score"),
+                    "routing_case": queue_item.get("routing_case")
+                }
+            )
+            
+            # Save annotation
+            self.store.add(annotation, copy_image=True)
+            
+            # Update queue status
+            queue_item["status"] = "labeled"
+            queue_item["labeled_at"] = datetime.now().isoformat()
+            self._save_cascade_queue()
+            
+            return {
+                "success": True,
+                "image_id": image_id,
+                "label": label,
+                "remaining_in_queue": sum(1 for item in self.cascade_queue if item["status"] == "pending")
+            }
+    
+    def skip_cascade_item(self, image_id: str) -> Dict:
+        """
+        Skip a cascade queue item without labeling.
+        
+        Thread-safe: Yes (uses queue_lock)
+        """
+        with self.queue_lock:
+            for item in self.cascade_queue:
+                if item["image_id"] == image_id:
+                    item["status"] = "skipped"
+                    item["skipped_at"] = datetime.now().isoformat()
+                    self._save_cascade_queue()
+                    return {
+                        "success": True,
+                        "image_id": image_id,
+                        "remaining_in_queue": sum(1 for x in self.cascade_queue if x["status"] == "pending")
+                    }
+            
+            return {"success": False, "error": "Image not found in cascade queue"}
+    
+    def get_cascade_stats(self) -> Dict:
+        """
+        Get cascade queue statistics.
+        """
+        with self.queue_lock:
+            total = len(self.cascade_queue)
+            pending = sum(1 for item in self.cascade_queue if item["status"] == "pending")
+            labeled = sum(1 for item in self.cascade_queue if item["status"] == "labeled")
+            skipped = sum(1 for item in self.cascade_queue if item["status"] == "skipped")
+            
+            # Get average scores
+            pending_items = [item for item in self.cascade_queue if item["status"] == "pending"]
+            avg_bgad_score = sum(item["bgad_score"] for item in pending_items) / len(pending_items) if pending_items else 0
+            
+            return {
+                "total_queued": total,
+                "pending": pending,
+                "labeled": labeled,
+                "skipped": skipped,
+                "avg_bgad_score": round(avg_bgad_score, 4),
+                "annotation_store_stats": self.store.get_stats()
+            }
     
     def export(self, format: str = "json", output_path: Optional[Path] = None) -> Path:
         """Export annotations."""

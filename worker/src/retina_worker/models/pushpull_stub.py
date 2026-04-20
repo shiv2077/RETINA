@@ -80,13 +80,14 @@ from .base import AnomalyDetector, AnomalyPrediction
 logger = structlog.get_logger()
 
 
-# Predefined defect categories for simulation
+# Predefined defect categories — Dutch canonical names (see CLAUDE.md §6.2)
+# English display names are for UI only; never use them as code identifiers.
 DEFECT_CATEGORIES = [
-    "scratch",
-    "dent", 
-    "contamination",
-    "discoloration",
-    "crack",
+    "krassen",    # scratches
+    "deuk",       # dent
+    "vlekken",    # stains
+    "barst",      # crack
+    "open voeg",  # open joint
 ]
 
 

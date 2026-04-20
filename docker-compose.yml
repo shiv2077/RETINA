@@ -41,7 +41,7 @@ services:
       - "5432:5432"
     environment:
       - POSTGRES_USER=retina
-      - POSTGRES_PASSWORD=retina
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=retina
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -105,14 +105,14 @@ services:
       - "3001:3001"
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgres://retina:retina@postgres:5432/retina
-      - JWT_SECRET=retina-secret-change-in-production
+      - DATABASE_URL=postgres://retina:${POSTGRES_PASSWORD}@postgres:5432/retina
+      - JWT_SECRET=${JWT_SECRET}
       - BACKEND_HOST=0.0.0.0
       - BACKEND_PORT=3001
       - RUST_LOG=info,tower_http=debug,retina_backend=debug
       - CORS_ALLOWED_ORIGINS=http://localhost:3000
     volumes:
-      - image-data:/app/data/images
+      - image-data:/data/images
     depends_on:
       redis:
         condition: service_healthy
@@ -150,11 +150,26 @@ services:
       - REDIS_URL=redis://redis:6379
       - WORKER_CONCURRENCY=2
       - DEFAULT_UNSUPERVISED_MODEL=patchcore
-      - DEBUG_MODE=true
-      - MOCK_INFERENCE_DELAY_MS=500
+      - DEBUG_MODE=false
+      - MOCK_INFERENCE_DELAY_MS=0
+      # GPT-4V: reads from .env file via ${OPENAI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GPT4V_PRODUCT_TYPE=${GPT4V_PRODUCT_TYPE:-manufactured product}
+      - GPT4V_MAX_RETRIES=3
+      # PatchCore: path inside container (matches volume mount below)
+      - PATCHCORE_CHECKPOINT_PATH=/data/models/patchcore
+    volumes:
+      # Share image storage with backend so worker can read uploaded files
+      - image-data:/data/images
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r = redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     # Scale workers for parallel inference:
     # docker compose up --scale worker=4
     deploy:
@@ -188,7 +203,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # Fixed: was pointing to wrong port 8000, backend is on 3001
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
     depends_on:
       - backend
     networks:

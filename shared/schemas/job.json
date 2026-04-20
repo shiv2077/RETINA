@@ -17,8 +17,8 @@
     },
     "model_type": {
       "type": "string",
-      "enum": ["patchcore", "padim", "winclip", "pushpull"],
-      "description": "Model to use for inference. Stage 1 models: patchcore, padim, winclip. Stage 2 model: pushpull (requires labeled data)."
+      "enum": ["patchcore", "padim", "winclip", "gpt4v", "pushpull"],
+      "description": "Model to use for inference. Stage 1 models: patchcore, padim, winclip, gpt4v (zero-shot fallback). Stage 2 model: pushpull (requires labeled data)."
     },
     "stage": {
       "type": "integer",

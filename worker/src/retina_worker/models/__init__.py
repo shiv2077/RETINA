@@ -43,17 +43,22 @@ See ``base.py`` for the abstract interface definition.
 """
 
 from .base import AnomalyDetector, AnomalyPrediction
-from .factory import get_model
+from .factory import get_model, get_cached_models, clear_model_cache
+from .gpt4v_detector import GPT4VDetector
+from .patchcore_real import PatchCoreReal
 from .patchcore_stub import PatchCoreStub
 from .winclip_stub import WinCLIPStub
 from .pushpull_stub import PushPullStub
-from .supervised_classifier import SupervisedClassifier, get_supervised_classifier
 
 __all__ = [
     "AnomalyDetector",
     "AnomalyPrediction",
     "get_model",
+    "get_cached_models",
+    "clear_model_cache",
+    "GPT4VDetector",
+    "PatchCoreReal",
     "PatchCoreStub",
-    "WinCLIPStub", 
+    "WinCLIPStub",
     "PushPullStub",
 ]

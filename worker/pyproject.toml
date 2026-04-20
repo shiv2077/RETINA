@@ -39,44 +39,39 @@ classifiers = [
 dependencies = [
     # Redis client for job queue consumption
     "redis>=5.0.0",
-    
+
     # Data validation and settings management
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    
+
     # Image processing
     "pillow>=10.0.0",
     "numpy>=1.24.0",
-    
+
     # HTTP client (for callbacks and health checks)
     "httpx>=0.27.0",
-    
+
     # Structured logging
     "structlog>=24.0.0",
-    
+
     # Environment variable loading
     "python-dotenv>=1.0.0",
+
+    # OpenAI SDK — required for GPT-4V zero-shot detector
+    "openai>=1.0.0",
+
+    # PyTorch — required for PatchCore real implementation
+    "torch>=2.0.0,<3.0.0",
+    "torchvision>=0.15.0,<1.0.0",
+
+    # Anomalib — production-grade PatchCore/PaDiM training pipeline
+    "anomalib>=1.0.0,<2.0.0",
 ]
 
 # -----------------------------------------------------------------------------
 # Optional Dependencies
 # -----------------------------------------------------------------------------
-# ML frameworks are optional to allow lightweight testing and development.
-# In production, these would be required for actual model inference.
-# -----------------------------------------------------------------------------
 [project.optional-dependencies]
-ml = [
-    # PyTorch for model inference
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    
-    # Anomalib for pretrained anomaly detection models
-    # Note: Anomalib integration is planned but not yet implemented
-    # "anomalib>=1.0.0",
-    
-    # CLIP for zero-shot detection (WinCLIP)
-    # "open-clip-torch>=2.20.0",
-]
 
 dev = [
     "pytest>=8.0.0",

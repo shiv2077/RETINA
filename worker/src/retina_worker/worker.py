@@ -226,15 +226,40 @@ class Worker:
             logger.debug("Simulating inference delay", delay_ms=self.settings.mock_inference_delay_ms)
             time.sleep(delay_sec)
         
-        # Get the appropriate model
+        # Get the appropriate model.
+        # Cold-start fallback: if PatchCore is requested but has no memory bank yet,
+        # route to GPT-4V so every image still gets scored from day one.
+        from .models.patchcore_real import PatchCoreReal
+        from .schemas import ModelType
+
         model = get_model(job.model_type)
+        if job.model_type == ModelType.PATCHCORE and isinstance(model, PatchCoreReal):
+            if not model.has_memory_bank:
+                logger.info(
+                    "PatchCore cold-start: no memory bank — routing to GPT-4V",
+                    image_id=job.image_id,
+                )
+                model = get_model(ModelType.GPT4V)
         
+        # Load image bytes from shared volume path if available.
+        # The backend sets job.image_path when it saves the uploaded file.
+        image_data: bytes | None = None
+        if job.image_path:
+            try:
+                with open(job.image_path, "rb") as f:
+                    image_data = f.read()
+                logger.debug("Image loaded from path", path=job.image_path, bytes=len(image_data))
+            except OSError as exc:
+                logger.warning(
+                    "Could not read image file — proceeding without image bytes",
+                    path=job.image_path,
+                    error=str(exc),
+                )
+
         # Run prediction
-        # Note: Currently passing None for image_data since we're using stubs
-        # When real storage is implemented, we'd fetch the image bytes here
         prediction = model.predict(
             image_id=job.image_id,
-            image_data=None,  # TODO: Fetch from storage when implemented
+            image_data=image_data,
         )
         
         # Build result based on stage
@@ -276,4 +301,8 @@ class Worker:
             stage1_output=stage1_output,
             stage2_output=stage2_output,
             active_learning=active_learning,
+            # GPT-4V / VLM fields — None for non-VLM models
+            defect_description=prediction.defect_description,
+            defect_location=prediction.defect_location,
+            gpt4v_reasoning=prediction.gpt4v_reasoning,
         )

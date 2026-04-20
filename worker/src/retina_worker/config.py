@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Development/Debug
     # -------------------------------------------------------------------------
-    debug_mode: bool = True
-    mock_inference_delay_ms: int = 500
+    debug_mode: bool = False
+    mock_inference_delay_ms: int = 0
     
     # -------------------------------------------------------------------------
     # Model Configuration
@@ -76,6 +76,26 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Maximum samples to keep in the labeling pool
     al_pool_max_size: int = 100
+
+    # -------------------------------------------------------------------------
+    # GPT-4V / OpenAI Configuration
+    # -------------------------------------------------------------------------
+    # OpenAI API key for GPT-4o vision inference (Stage 1 VLM detector)
+    openai_api_key: str = ""
+
+    # Product type description passed to the GPT-4o inspection prompt
+    # Change per deployment: "PCB board", "wood panel", "car door", etc.
+    gpt4v_product_type: str = "manufactured product"
+
+    # Retry attempts on rate-limit or timeout errors
+    gpt4v_max_retries: int = 3
+
+    # -------------------------------------------------------------------------
+    # PatchCore Configuration
+    # -------------------------------------------------------------------------
+    # Directory where the memory bank checkpoint is stored.
+    # Leave empty to start without a checkpoint (call train() to build it).
+    patchcore_checkpoint_path: str = ""
 
 
 def get_settings() -> Settings:

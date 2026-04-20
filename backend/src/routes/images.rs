@@ -91,11 +91,27 @@ async fn submit_image(
     // Select model based on stage
     let model_type = match stage {
         PipelineStage::Supervised => ModelType::PushPull,
+        // Default Stage 1 model is PatchCore (memory-bank k-NN).
+        // The worker falls back to GPT-4V automatically when no memory bank exists (cold start).
         PipelineStage::Unsupervised => request.model_type.unwrap_or(ModelType::PatchCore),
     };
 
+    // Resolve image path for the worker.
+    // The client should set this after uploading the file via POST /api/images/upload.
+    // If not provided, the worker will run in stub/no-image mode.
+    let image_path = request.image_path.clone();
+    if image_path.is_some() {
+        tracing::debug!(image_id = %request.image_id, "Image path provided for worker");
+    } else {
+        tracing::debug!(
+            image_id = %request.image_id,
+            "No image_path in request — worker will run without pixel data. \
+             Upload via POST /api/images/upload first."
+        );
+    }
+
     // Create inference job
-    let job = InferenceJob::new(request.image_id.clone(), model_type)
+    let mut job = InferenceJob::new(request.image_id.clone(), model_type)
         .with_stage(stage)
         .with_priority(request.priority.unwrap_or(5))
         .with_metadata(JobMetadata {
@@ -104,10 +120,13 @@ async fn submit_image(
             callback_url: None,
         });
 
+    if let Some(path) = image_path {
+        job = job.with_image_path(path);
+    }
+
     let job_id = job.job_id;
 
-    // Store image metadata
-    // In future: this is where we'd store the actual image blob reference
+    // Store image metadata reference
     let _image_meta = ImageMeta::new(request.image_id);
 
     // Submit job to queue

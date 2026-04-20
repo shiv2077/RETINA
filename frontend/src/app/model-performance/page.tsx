@@ -1,337 +1,151 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Activity, Zap, GitBranch } from 'lucide-react';
-import { getSystemStatus, type SystemStatusResponse } from '@/lib/api';
+import { Brain, TrendingUp } from 'lucide-react';
 import Card from '@/components/Card';
-import GlassCard from '@/components/GlassCard';
-import StatusCard from '@/components/StatusCard';
 import AnomalyScoreBar from '@/components/AnomalyScoreBar';
-import SectionHeader from '@/components/SectionHeader';
 import Badge from '@/components/Badge';
-import ErrorBanner from '@/components/ErrorBanner';
-import LoadingSkeleton from '@/components/LoadingSkeleton';
+import SectionHeader from '@/components/SectionHeader';
 
-interface BenchmarkRow {
-  model: string;
-  type: string;
-  dataset: string;
-  auc: string;
-  aucValue: number;
-  notes: string;
-  stage: 1 | 2;
-  active: boolean;
-}
-
-// Preserved exactly from original — accurate research data
-const BENCHMARKS: BenchmarkRow[] = [
-  {
-    model: 'PatchCore',
-    type: 'Unsupervised',
-    dataset: 'MVTec AD (avg)',
-    auc: '0.895',
-    aucValue: 0.895,
-    notes: 'Memory-bank k-NN, one-class learner, no defect labels needed',
-    stage: 1,
-    active: true,
-  },
-  {
-    model: 'PaDiM',
-    type: 'Unsupervised',
-    dataset: 'MVTec AD (avg)',
-    auc: '0.884',
-    aucValue: 0.884,
-    notes: 'Multivariate Gaussian per patch, fastest inference of the three',
-    stage: 1,
-    active: false,
-  },
-  {
-    model: 'GPT-4o Vision',
-    type: 'Zero-shot VLM',
-    dataset: 'MVTec AD (est.)',
-    auc: '0.856+',
-    aucValue: 0.856,
-    notes: 'Zero-shot, no training, produces human-readable defect descriptions',
-    stage: 1,
-    active: true,
-  },
-  {
-    model: 'AdaCLIP',
-    type: 'Zero-shot VLM',
-    dataset: 'Decospan (wood)',
-    auc: '~0.72',
-    aucValue: 0.72,
-    notes: 'CLIP with learnable prompts, ran on proprietary Decospan dataset',
-    stage: 1,
-    active: false,
-  },
-  {
-    model: 'BGAD',
-    type: 'Supervised',
-    dataset: 'MVTec AD (avg)',
-    auc: '0.930',
-    aucValue: 0.930,
-    notes: 'Best-in-class with labeled anomaly data, requires 50-200 labels',
-    stage: 2,
-    active: false,
-  },
-  {
-    model: 'Custom Push-Pull',
-    type: 'Supervised',
-    dataset: 'Decospan (wood)',
-    auc: '0.860',
-    aucValue: 0.860,
-    notes: 'Trained with 100 normal + 200 anomaly samples, EfficientNet-B0 backbone',
-    stage: 2,
-    active: false,
-  },
+const STAGE1_BENCHMARKS = [
+  { method: 'PatchCore',  dataset: 'MVTec AD', image_auroc: 0.895, type: 'Memory Bank',     notes: 'Primary Stage 1 model' },
+  { method: 'PaDiM',      dataset: 'MVTec AD', image_auroc: 0.884, type: 'Gaussian',         notes: 'Fastest inference' },
+  { method: 'WinCLIP',    dataset: 'MVTec AD', image_auroc: 0.856, type: 'Zero-shot',        notes: 'VLM baseline' },
+  { method: 'GPT-4o',     dataset: 'MVTec AD', image_auroc: null,  type: 'Zero-shot VLM',   notes: 'Cold-start fallback' },
 ];
 
-interface DefectCategory {
-  dutch: string;
-  english: string;
-  description: string;
-  trainCount: number;
-  testCount: number;
-}
-
-// Preserved exactly from original — accurate dataset labels
-const DECOSPAN_CATEGORIES: DefectCategory[] = [
-  { dutch: 'deuk',        english: 'Dent',           description: 'Physical indentation from impact or pressure',  trainCount: 25, testCount: 92  },
-  { dutch: 'krassen',     english: 'Scratches',       description: 'Surface abrasion marks, linear or irregular',    trainCount: 25, testCount: 92  },
-  { dutch: 'vlekken',     english: 'Stains',          description: 'Discolouration from contamination or moisture',  trainCount: 25, testCount: 91  },
-  { dutch: 'open voeg',   english: 'Open Joint',      description: 'Gap between wood veneer segments',              trainCount: 25, testCount: 91  },
-  { dutch: 'open fout',   english: 'Open Defect',     description: 'General open surface defect or void',           trainCount: 25, testCount: 91  },
-  { dutch: 'open knop',   english: 'Open Knot',       description: 'Natural wood knot that has opened or split',    trainCount: 25, testCount: 91  },
-  { dutch: 'snijfout',    english: 'Cutting Error',   description: 'Incorrect cut angle or dimension from sawing',  trainCount: 25, testCount: 40  },
-  { dutch: 'barst',       english: 'Crack',           description: 'Structural crack through the material',         trainCount: 0,  testCount: 53  },
-  { dutch: 'scheef',      english: 'Skewed',          description: 'Misaligned or crooked orientation',             trainCount: 0,  testCount: 8   },
-  { dutch: 'stuk fineer', english: 'Broken Veneer',   description: 'Damaged or detached wood veneer layer',         trainCount: 0,  testCount: 62  },
-  { dutch: 'zaag kort',   english: 'Cut Too Short',   description: 'Board cut shorter than specification',          trainCount: 0,  testCount: 29  },
-  { dutch: 'zaag lang',   english: 'Cut Too Long',    description: 'Board cut longer than specification',           trainCount: 0,  testCount: 57  },
-  { dutch: 'not_labeled', english: 'Unlabelled',      description: 'Anomalous samples awaiting expert labelling',   trainCount: 25, testCount: 795 },
+const STAGE2_BENCHMARKS = [
+  { method: 'BGAD',       dataset: 'MVTec AD', image_auroc: 0.930, type: 'Supervised',       notes: 'Requires masks' },
+  { method: 'Push-Pull',  dataset: 'Decospan', image_auroc: 0.860, type: 'Supervised',       notes: 'No masks, 100-200 samples' },
 ];
+
+const DECOSPAN_CATEGORIES = [
+  { dutch: 'krassen',   english: 'scratches',      category: 'surface' },
+  { dutch: 'deuk',      english: 'dent',           category: 'structural' },
+  { dutch: 'vlekken',   english: 'stains',         category: 'surface' },
+  { dutch: 'open voeg', english: 'open joint',     category: 'structural' },
+  { dutch: 'open fout', english: 'open defect',    category: 'structural' },
+  { dutch: 'open knop', english: 'open knot',      category: 'structural' },
+  { dutch: 'snijfout',  english: 'cutting error',  category: 'process' },
+  { dutch: 'barst',     english: 'crack',          category: 'structural' },
+  { dutch: 'scheef',    english: 'skewed',         category: 'process' },
+  { dutch: 'stuk fineer', english: 'broken veneer', category: 'structural' },
+];
+
+const CATEGORY_COLOR: Record<string, string> = {
+  surface:    'bg-state-warnSubtle text-state-warn border-state-warn/20',
+  structural: 'bg-state-alertSubtle text-state-alert border-state-alert/20',
+  process:    'bg-kul-blue/10 text-kul-accent border-kul-accent/20',
+};
+
+function BenchmarkTable({ rows }: { rows: typeof STAGE1_BENCHMARKS }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full">
+        <thead>
+          <tr className="border-b border-surface-border">
+            {['Method', 'Dataset', 'Image AUROC', 'Type', 'Notes'].map(h => (
+              <th key={h} className="pb-3 px-4 text-left text-xs font-medium text-text-tertiary uppercase tracking-wider">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => (
+            <tr key={row.method} className="border-b border-surface-border hover:bg-surface-overlay/50">
+              <td className="py-3 px-4 text-sm font-medium text-text-primary">{row.method}</td>
+              <td className="py-3 px-4 text-xs font-mono text-text-secondary">{row.dataset}</td>
+              <td className="py-3 px-4">
+                {row.image_auroc !== null ? (
+                  <div className="flex items-center gap-2">
+                    <span className={[
+                      'text-xs font-mono font-semibold',
+                      row.image_auroc >= 0.9 ? 'text-state-pass' :
+                      row.image_auroc >= 0.7 ? 'text-state-warn' : 'text-state-alert',
+                    ].join(' ')}>
+                      {(row.image_auroc * 100).toFixed(1)}%
+                    </span>
+                    <AnomalyScoreBar score={row.image_auroc} size="xs" className="w-16" />
+                  </div>
+                ) : (
+                  <span className="text-xs text-text-disabled">TBD</span>
+                )}
+              </td>
+              <td className="py-3 px-4"><Badge color="default">{row.type}</Badge></td>
+              <td className="py-3 px-4 text-xs text-text-tertiary">{row.notes}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function ModelPerformancePage() {
-  const [status, setStatus] = useState<SystemStatusResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [statusError, setStatusError] = useState(false);
-
-  useEffect(() => {
-    getSystemStatus()
-      .then(s => { setStatus(s); setLoading(false); })
-      .catch(() => { setStatusError(true); setLoading(false); });
-  }, []);
-
-  const activeStage = status?.current_stage ?? 1;
-
   return (
     <div>
-      {/* Page header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-primary">Model Performance</h1>
         <p className="text-sm text-text-tertiary mt-1">
-          Benchmark results across datasets, active model status, and defect category reference
+          Reference benchmarks from published results — any new model must exceed baseline by AUC &gt; 0.02
         </p>
       </div>
 
-      {/* Live status cards */}
-      {statusError ? (
-        <div className="mb-8">
-          <ErrorBanner message="Could not reach backend — model status unavailable." />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-          <StatusCard
-            title="Active Pipeline Stage"
-            value={loading ? '—' : `Stage ${activeStage}`}
-            subtitle={status?.stage2_available ? 'Supervised active' : 'Unsupervised / VLM'}
-            icon={GitBranch}
-            color="kul"
-            loading={loading}
-          />
-          <StatusCard
-            title="Stage 1 Model"
-            value={status?.active_models?.stage1_model ?? '—'}
-            subtitle="Current zero-shot detector"
-            icon={Activity}
-            color="pass"
-            loading={loading}
-          />
-          <StatusCard
-            title="Stage 2 Progress"
-            value={status ? `${Math.round(status.stage2_progress)}%` : '—'}
-            subtitle={status ? `${status.stats.labels_collected} / ${status.labels_for_stage2} labels` : 'Loading…'}
-            icon={Zap}
-            color={status?.stage2_available ? 'pass' : 'default'}
-            loading={loading}
-          />
-        </div>
-      )}
-
-      {/* Benchmark table */}
-      <section className="mb-8">
-        <SectionHeader title="Benchmark Results" />
-        <Card padding="none" className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full">
-              <thead>
-                <tr className="border-b border-surface-border bg-surface-overlay">
-                  {['Model', 'Type', 'Dataset', 'AUC', 'Stage', 'Notes'].map(h => (
-                    <th
-                      key={h}
-                      className="px-4 py-3 text-left text-xs font-medium text-text-tertiary uppercase tracking-wider"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {BENCHMARKS.map(row => (
-                  <tr
-                    key={`${row.model}-${row.dataset}`}
-                    className={[
-                      'border-b border-surface-border transition-colors',
-                      row.active ? 'bg-kul-blue/8' : 'hover:bg-surface-overlay/50',
-                    ].join(' ')}
-                  >
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-text-primary">{row.model}</span>
-                        {row.active && (
-                          <span className="inline-flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-state-pass animate-pulse" />
-                            <span className="text-state-pass text-xs">Active</span>
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary whitespace-nowrap">{row.type}</td>
-                    <td className="px-4 py-3 text-xs text-text-secondary whitespace-nowrap">{row.dataset}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-semibold text-text-primary">{row.auc}</span>
-                        <AnomalyScoreBar score={row.aucValue} size="xs" className="w-16" />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <Badge color={row.stage === 1 ? 'kul' : 'purple'}>
-                        Stage {row.stage}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-text-tertiary max-w-xs">{row.notes}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      </section>
-
-      {/* Decospan categories */}
-      <section className="mb-8">
+      {/* Stage 1 */}
+      <Card padding="md" className="mb-6">
         <SectionHeader
-          title="Decospan Wood Defect Categories"
-          subtitle="Proprietary dataset from KU Leuven Vakantiejob internship · 300 train · 10,285 test · Dutch names are canonical identifiers"
+          title="Stage 1 — Unsupervised Detection"
+          subtitle="Trained on normal images only. MVTec AD dataset."
         />
-        <Card padding="none" className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full">
-              <thead>
-                <tr className="border-b border-surface-border bg-surface-overlay">
-                  {['Dutch (canonical)', 'English', 'Description', 'Train', 'Test'].map(h => (
-                    <th
-                      key={h}
-                      className="px-4 py-3 text-left text-xs font-medium text-text-tertiary uppercase tracking-wider"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {DECOSPAN_CATEGORIES.map(cat => (
-                  <tr
-                    key={cat.dutch}
-                    className="border-b border-surface-border hover:bg-surface-overlay/50 transition-colors"
-                  >
-                    <td className="px-4 py-2.5 font-mono text-sm text-text-primary whitespace-nowrap">
-                      {cat.dutch}
-                    </td>
-                    <td className="px-4 py-2.5 text-sm font-medium text-text-secondary whitespace-nowrap">
-                      {cat.english}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-text-tertiary">{cat.description}</td>
-                    <td className="px-4 py-2.5 text-center">
-                      {cat.trainCount > 0 ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-kul-accent" />
-                          <span className="text-xs font-mono text-text-primary">{cat.trainCount}</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-surface-border" />
-                          <span className="text-xs text-text-disabled">—</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs font-mono text-center text-text-secondary">
-                      {cat.testCount}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      </section>
+        <BenchmarkTable rows={STAGE1_BENCHMARKS} />
+      </Card>
 
-      {/* Architecture note */}
-      <GlassCard padding="md" className="border-kul-accent/20 bg-kul-blue/5">
-        <h2 className="text-base font-semibold text-text-primary mb-4">
-          RETINA Two-Stage Architecture
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+      {/* Stage 2 */}
+      <Card padding="md" className="mb-6">
+        <SectionHeader
+          title="Stage 2 — Supervised Classification"
+          subtitle="Requires expert-labeled defect samples from active learning."
+        />
+        <BenchmarkTable rows={STAGE2_BENCHMARKS} />
+        <div className="mt-4 p-3 bg-surface-overlay rounded-lg">
+          <p className="text-xs text-text-tertiary">
+            <span className="text-kul-accent font-medium">Stage 2 activates</span> automatically
+            when the active learning pool reaches the configured label threshold (default: 200 labels).
+            Before activation, all Stage 1 anomaly flags route to the Expert Review queue.
+          </p>
+        </div>
+      </Card>
+
+      {/* Decospan taxonomy */}
+      <Card padding="md">
+        <SectionHeader
+          title="Decospan Defect Taxonomy"
+          subtitle="Dutch names are canonical. English names are display-only and must not be used as code identifiers."
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+          {DECOSPAN_CATEGORIES.map(({ dutch, english, category }) => (
+            <div
+              key={dutch}
+              className={['rounded-lg border px-4 py-3', CATEGORY_COLOR[category]].join(' ')}
+            >
+              <p className="text-sm font-mono font-semibold">{dutch}</p>
+              <p className="text-xs opacity-70 mt-0.5">{english}</p>
+              <Badge color="default" className="mt-2 text-[10px]">{category}</Badge>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 flex items-start gap-3 p-3 bg-surface-overlay rounded-lg">
+          <TrendingUp className="w-4 h-4 text-kul-accent flex-shrink-0 mt-0.5" />
           <div>
-            <p className="font-medium text-text-primary mb-2">Stage 1 — Unsupervised / Zero-Shot</p>
-            <ul className="space-y-1.5 text-text-tertiary text-xs">
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-state-pass mt-1.5 flex-shrink-0" />
-                PatchCore: memory-bank k-NN, trains on normal images only
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-state-pass mt-1.5 flex-shrink-0" />
-                GPT-4o Vision: zero-shot, no training, text explanations
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-state-pass mt-1.5 flex-shrink-0" />
-                Active from day one — no labelled defect data required
-              </li>
-            </ul>
-          </div>
-          <div>
-            <p className="font-medium text-text-primary mb-2">Stage 2 — Supervised (Active Learning)</p>
-            <ul className="space-y-1.5 text-text-tertiary text-xs">
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-kul-accent mt-1.5 flex-shrink-0" />
-                Activates after {status?.labels_for_stage2 ?? '—'} expert labels collected
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-kul-accent mt-1.5 flex-shrink-0" />
-                Custom Push-Pull contrastive model (EfficientNet-B0 backbone)
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-kul-accent mt-1.5 flex-shrink-0" />
-                Current progress:{' '}
-                {status
-                  ? `${Math.round(status.stage2_progress)}% (${status.stats.labels_collected}/${status.labels_for_stage2} labels)`
-                  : '—'}
-              </li>
-            </ul>
+            <p className="text-xs text-text-tertiary leading-relaxed">
+              <span className="text-text-secondary font-medium">Dataset location:</span>{' '}
+              KU Leuven HPC — <span className="font-mono">/scratch/leuven/369/vsc36963/Vakantiejob/Decospan/Dataset</span>
+              {' '}(not in repo — must be transferred separately for training).
+            </p>
           </div>
         </div>
-      </GlassCard>
+      </Card>
     </div>
   );
 }

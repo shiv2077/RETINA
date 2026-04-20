@@ -16,18 +16,20 @@ from pydantic import BaseModel, Field
 class ModelType(str, Enum):
     """
     Anomaly detection model types.
-    
+
     Stage 1 (Unsupervised/Zero-shot):
     - PATCHCORE: Memory-bank with pretrained features + k-NN
     - PADIM: Gaussian modeling of patch distributions
-    - WINCLIP: CLIP-based zero-shot detection
-    
+    - WINCLIP: CLIP-based zero-shot detection (legacy stub)
+    - GPT4V: GPT-4o Vision API — zero-shot VLM detector (replaces WinCLIP)
+
     Stage 2 (Supervised):
     - PUSHPULL: Contrastive learning with labeled samples
     """
     PATCHCORE = "patchcore"
     PADIM = "padim"
     WINCLIP = "winclip"
+    GPT4V = "gpt4v"
     PUSHPULL = "pushpull"
 
 
@@ -56,7 +58,7 @@ class JobMetadata(BaseModel):
 class InferenceJob(BaseModel):
     """
     An inference job received from the Redis queue.
-    
+
     This structure matches the Rust backend's InferenceJob struct
     to ensure seamless JSON serialization across language boundaries.
     """
@@ -68,6 +70,9 @@ class InferenceJob(BaseModel):
     status: JobStatus = Field(default=JobStatus.PENDING)
     submitted_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: JobMetadata = Field(default_factory=JobMetadata)
+    # Path to the saved image file on the shared Docker volume.
+    # Set by the backend after uploading; enables workers to load pixel data.
+    image_path: Optional[str] = Field(None, description="Absolute path to image on shared volume")
 
 
 class Stage1Output(BaseModel):
@@ -126,9 +131,15 @@ class InferenceResult(BaseModel):
     
     # Error handling
     error: Optional[InferenceError] = None
-    
+
     # Performance metrics
     processing_time_ms: Optional[int] = None
+
+    # GPT-4V / VLM outputs — populated when model_used == "gpt4v"
+    # These are surfaced to operators on the Expert Review page.
+    defect_description: Optional[str] = None
+    defect_location: Optional[str] = None
+    gpt4v_reasoning: Optional[str] = None
 
 
 class UnlabeledSample(BaseModel):

@@ -51,6 +51,12 @@ pub enum ModelType {
     /// Reference: Jeong et al., "WinCLIP: Zero-/Few-Shot Anomaly Classification"
     WinCLIP,
 
+    /// GPT-4V: Zero-shot detection via GPT-4o vision API
+    /// Produces anomaly scores + human-readable defect descriptions
+    /// Supersedes WinCLIP as the primary zero-shot Stage 1 model
+    #[serde(rename = "gpt4v")]
+    Gpt4V,
+
     /// Push-Pull: Contrastive learning for supervised classification
     /// Requires labeled samples from active learning
     /// Reference: Simplified version of BGAD approach
@@ -69,6 +75,7 @@ impl std::fmt::Display for ModelType {
             Self::PatchCore => write!(f, "patchcore"),
             Self::PaDiM => write!(f, "padim"),
             Self::WinCLIP => write!(f, "winclip"),
+            Self::Gpt4V => write!(f, "gpt4v"),
             Self::PushPull => write!(f, "pushpull"),
         }
     }
@@ -169,6 +176,12 @@ pub struct InferenceJob {
     /// Optional metadata for tracking
     #[serde(default)]
     pub metadata: JobMetadata,
+
+    /// Absolute path to the saved image file on the shared Docker volume.
+    /// Set by the backend after persisting the uploaded file.
+    /// Enables Python workers to load actual pixel data for real model inference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
 }
 
 fn default_priority() -> u8 {
@@ -187,7 +200,14 @@ impl InferenceJob {
             status: JobStatus::Pending,
             submitted_at: Utc::now(),
             metadata: JobMetadata::default(),
+            image_path: None,
         }
+    }
+
+    /// Attach the on-disk image path so the worker can load pixel data.
+    pub fn with_image_path(mut self, path: String) -> Self {
+        self.image_path = Some(path);
+        self
     }
 
     /// Set the pipeline stage for this job.
@@ -212,7 +232,7 @@ impl InferenceJob {
 /// Request body for submitting a new inference job.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubmitJobRequest {
-    /// Image identifier (in current implementation, this is a simulated ID)
+    /// Image identifier
     pub image_id: String,
 
     /// Model to use (optional, defaults to PatchCore)
@@ -224,6 +244,11 @@ pub struct SubmitJobRequest {
 
     /// Submission source (optional)
     pub source: Option<String>,
+
+    /// Absolute path to the image on the shared volume (optional).
+    /// Set this when the client has already uploaded the file via
+    /// POST /api/images/upload, so the worker can read pixel data.
+    pub image_path: Option<String>,
 }
 
 /// Response after submitting a new inference job.

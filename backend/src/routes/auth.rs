@@ -66,9 +66,8 @@ async fn login(
         return Err(AppError::BadRequest("Invalid username or password".to_string()));
     }
 
-    // Create JWT
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "retina-dev-secret".to_string());
-    let token = create_token(&user.username, &secret)
+    // Create JWT — secret from config, never from env directly
+    let token = create_token(&user.username, &state.config.jwt_secret)
         .map_err(|e| AppError::Internal(format!("Token creation failed: {}", e)))?;
 
     tracing::info!(username = %user.username, "User logged in");

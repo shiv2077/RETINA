@@ -73,6 +73,7 @@ uploads/
 # Large Datasets (download separately)
 # -----------------------------------------------------------------------------
 mvtec_anomaly_detection/
+mvtec/
 *.tar.gz
 *.zip
 

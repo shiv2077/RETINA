@@ -78,6 +78,14 @@ pub struct AnomalyRecord {
     /// Pipeline stage (1 or 2)
     #[sqlx(default)]
     pub pipeline_stage: Option<i32>,
+
+    /// Human-readable defect description from GPT-4o (null for non-VLM models)
+    #[sqlx(default)]
+    pub defect_description: Option<String>,
+
+    /// One-sentence reasoning from GPT-4o explaining the prediction
+    #[sqlx(default)]
+    pub gpt4v_reasoning: Option<String>,
 }
 
 impl AnomalyRecord {
@@ -122,6 +130,8 @@ impl AnomalyRecord {
             expert_label: self.expert_label.clone(),
             final_classification: self.final_classification.clone(),
             anomaly_score: self.anomaly_score,
+            defect_description: self.defect_description.clone(),
+            gpt4v_reasoning: self.gpt4v_reasoning.clone(),
         }
     }
 }
@@ -140,6 +150,8 @@ pub struct AnomalyRecordResponse {
     pub expert_label: Option<String>,
     pub final_classification: Option<String>,
     pub anomaly_score: Option<f64>,
+    pub defect_description: Option<String>,
+    pub gpt4v_reasoning: Option<String>,
 }
 
 /// Request to create a new user.

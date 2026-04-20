@@ -36,6 +36,9 @@ pub struct Config {
 
     /// Active learning pool size (number of uncertain samples to present for labeling)
     pub active_learning_pool_size: u32,
+
+    /// JWT signing secret — must be at least 32 characters in production
+    pub jwt_secret: String,
 }
 
 impl Config {
@@ -60,12 +63,15 @@ impl Config {
                 .unwrap_or_else(|_| "*".to_string()),
 
             active_learning_stage2_threshold: env::var("AL_STAGE2_THRESHOLD")
-                .unwrap_or_else(|_| "100".to_string())
+                .unwrap_or_else(|_| "200".to_string())
                 .parse()?,
 
             active_learning_pool_size: env::var("AL_POOL_SIZE")
                 .unwrap_or_else(|_| "50".to_string())
                 .parse()?,
+
+            jwt_secret: env::var("JWT_SECRET")
+                .unwrap_or_else(|_| "retina-dev-secret-change-in-production".to_string()),
         })
     }
 }
@@ -77,8 +83,9 @@ impl Default for Config {
             backend_host: "0.0.0.0".to_string(),
             backend_port: 3001,
             cors_allowed_origins: "*".to_string(),
-            active_learning_stage2_threshold: 100,
+            active_learning_stage2_threshold: 200,
             active_learning_pool_size: 50,
+            jwt_secret: "retina-dev-secret-change-in-production".to_string(),
         }
     }
 }

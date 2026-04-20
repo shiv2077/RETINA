@@ -16,45 +16,72 @@
 - [ ] Infra (Docker/config) — root
 
 ### 0.2 Current implementation status
-Last verified: 2026-04-14
+Last verified: 2026-04-20
 
 | Component | Status | Notes |
 |---|---|---|
-| Backend API (Axum) | ~70% | Routes for images/labels incomplete |
-| Auth (JWT + Argon2) | DONE | Working |
+| Backend API (Axum) | ~75% | /upload endpoint missing; cascade routes missing |
+| Auth (JWT + Argon2) | DONE | JWT secret now from config, not env directly |
 | Image storage service | DONE | O(n) scan known perf issue |
-| Redis service layer | ~50% | Job submission methods cut off |
-| Worker poll loop | ~50% | Core run() loop unverified |
-| PatchCore (real) | STUB ONLY | patchcore_stub.py is fake |
-| GPT-4V detector | NOT BUILT | gpt4v_detector.py does not exist yet |
-| BGAD supervisor | STUB ONLY | pushpull_stub.py is fake |
-| Multi-class classifier | MISSING | No file exists |
-| Active learning module | PARTIAL | Redis pool defined, sampling not built |
-| Expert Review page | BROKEN | label/page.tsx — endpoints missing |
-| Model Performance page | MISSING | Not built |
-| Stage 2 activation logic | MISSING | Threshold in config, routing not wired |
-| Cascade inference route | MISSING | Frontend calls it, backend has nothing |
+| Redis service layer | DONE | Job submission, results, labeling pool working |
+| Worker poll loop | DONE | XREADGROUP loop; cold-start GPT-4V fallback; image bytes loaded |
+| PatchCore (real) | DONE | patchcore_real.py — Anomalib or ResNet50 fallback |
+| GPT-4V detector | DONE | gpt4v_detector.py — base64, retry, 500 tokens |
+| Stage 2 model | STUB ONLY | pushpull_stub.py — Dutch category names fixed |
+| BGAD | RESEARCH ONLY | research/supervised/BGAD/ — not wired into worker |
+| Multi-class classifier | MISSING | No production implementation |
+| Active learning module | PARTIAL | Pool defined; uncertainty sampling not built |
+| Expert Review page | PARTIAL | UI done; POST /labels/submit works; cascade endpoints 404 |
+| Model Performance page | DONE | Created — benchmark table + Decospan taxonomy |
+| Stage 2 activation logic | PARTIAL | Threshold in config (default 200); retina:system:stage key not used |
+| Cascade inference route | MISSING | Frontend calls POST /api/predict/cascade; Rust has no such route |
 
 ### 0.3 Known unfixed bugs — mark FIXED when resolved
-- [ ] Port mismatch: NEXT_PUBLIC_API_URL points to 8000, backend is on 3001
-- [ ] pydantic-settings not in pyproject.toml dependencies
-- [ ] Worker receives image_id only — cannot load actual image bytes
-- [ ] 5 phantom frontend routes that 404 on every call (see section 2.3)
+- [x] FIXED 2026-04-20: Port mismatch — api.ts fallback now localhost:3001
+- [x] FIXED: pydantic-settings in pyproject.toml
+- [x] FIXED: Worker can load image bytes via image_path on shared volume
+- [x] FIXED 2026-04-20: JWT_SECRET no longer hardcoded in docker-compose.yml
+- [ ] 5 phantom cascade routes that 404 on Rust backend (see section 2.3)
 - [ ] CORS wildcard allow_origin(Any) — unsafe for any non-local deploy
-- [ ] JWT_SECRET hardcoded in docker-compose.yml
+- [ ] No image upload endpoint (POST /api/images/upload not registered)
+- [ ] worker_dual.py REMOVED — was dead code with broken ModelType.PUSH_PULL enum
 
 ### 0.4 What is in progress right now
-<!-- Update this at the start and end of every session -->
-Nothing in progress. Starting fresh.
+Session: 2026-04-20
+Completed:
+  - Full codebase audit (docs/archive/audit-2026-04-20.md)
+  - Repository reorganisation — research/, notebooks/, docs/, legacy/
+  - api.ts fallback URL fixed (8000 → 3001)
+  - docker-compose.yml secrets removed (POSTGRES_PASSWORD, JWT_SECRET now from .env)
+  - .env.example created
+  - JWT secret threaded through Config struct (no more direct env::var in route handler)
+  - Stage 2 threshold default fixed: 100 → 200 in config.rs
+  - shared/schemas/job.json: gpt4v added to model_type enum
+  - worker_dual.py deleted (dead code, broken enum)
+  - pushpull_stub.py: DEFECT_CATEGORIES switched to Dutch canonical names
+  - worker config defaults fixed: debug_mode=False, mock_inference_delay_ms=0
+  - model-performance page created (was 404 from NavHeader)
+  - research/README.md created explaining what is and isn't wired
+  - CLAUDE.md §1.3 Redis keys corrected to match actual code
+Next session should start with:
+  1. Add POST /api/images/upload route to Rust backend (images.rs)
+  2. Add POST /api/predict/cascade route to Rust backend (section 2.3)
+  3. Wire real Push-Pull or BGAD model into worker Stage 2 slot
 
 ### 0.5 Repo structure
 ```
-backend/          Rust/Axum API server
-worker/           Python ML inference worker
-frontend/         Next.js 14 UI
+backend/          Rust/Axum API server (production)
+worker/           Python ML inference worker (production)
+frontend/         Next.js 14 UI (production)
 shared/schemas/   JSON Schema contracts (source of truth)
+research/         Standalone ML research code — NOT wired into pipeline
+notebooks/        Jupyter notebooks
+scripts/          Training and evaluation scripts
+docs/             Guides, figures, session archives
+legacy/           Archived FastAPI backend (src/backend/ prior to 2026-04-20)
 docker-compose.yml
 .env              Never commit — secrets live here
+.env.example      Template — copy to .env to start
 ```
 
 ---
@@ -117,14 +144,20 @@ schemas.py and the Rust models had already drifted once.
 ### 1.3 Redis key namespacing — never invent keys without documenting here
 
 ```
-retina:jobs:{job_id}          Hash      InferenceJob fields
-retina:queue:inference        Stream    Pending jobs (XREADGROUP, NOT LPUSH)
+retina:jobs:{job_id}          Hash      InferenceJob status + data
+retina:jobs:queue             Stream    Pending jobs (XREADGROUP, NOT LPUSH)
 retina:results:{job_id}       Hash      InferenceResult fields
+retina:images:{image_id}      Hash      latest_job_id for image→job lookup
+retina:labels:{image_id}      Hash      label_data JSON after expert labeling
 retina:alerts                 List      Recent anomaly alerts (LPUSH/LRANGE)
-retina:labeling:pool          SortedSet score = anomaly_score (not entropy yet — see 6.3)
-retina:labeling:{id}          Hash      Label assignment per image
-retina:system:stage           String    "1" or "2" — current active pipeline stage
+retina:al:pool                SortedSet score = uncertainty_score (see 6.3)
+retina:al:samples:{image_id}  String    UnlabeledSample metadata JSON
+retina:system:stats           Hash      jobs_submitted, jobs_completed, labels_collected
+retina:mismatches             Set       job_ids where supervised ≠ unsupervised
 ```
+
+Consumer group name: `workers`
+Stream name: `retina:jobs:queue`
 
 If you add a Redis key, add it to this table with type, pattern, and purpose.
 
@@ -678,8 +711,11 @@ shared/schemas/result.json                    InferenceResult — ground truth
 shared/schemas/label.json                     Label — ground truth
 
 RESEARCH (not wired into pipeline)
-Unsupervised_Models/AdaCLIP/                  Real CLIP-based VLM — standalone only
-Unsupervised_Models/AdaCLIP/config_decospan.yaml  ViT-L/14 config used for Decospan run
+research/unsupervised/AdaCLIP/                Real CLIP-based VLM — standalone only
+research/unsupervised/AdaCLIP/config_decospan.yaml  ViT-L/14 config used for Decospan run
+research/supervised/BGAD/                     Real BGAD implementation (AUC 0.930)
+research/supervised/Custom_Model_Push_Pull/   Push-Pull contrastive learning
+legacy/fastapi_backend/app.py                 Archived FastAPI backend (has cascade routes)
 
 INFRA
 docker-compose.yml                            Service wiring — port 3001 is backend

@@ -63,13 +63,26 @@ pub async fn run_migrations(pool: &PgPool) -> AppResult<()> {
             final_classification VARCHAR(100),
             anomaly_score DOUBLE PRECISION,
             model_used VARCHAR(50),
-            pipeline_stage INTEGER
+            pipeline_stage INTEGER,
+            defect_description TEXT,
+            gpt4v_reasoning TEXT
         )
         "#,
     )
     .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("Migration failed: {}", e)))?;
+
+    // Idempotent: add new columns to existing tables (safe on re-run)
+    for alter_sql in [
+        "ALTER TABLE anomaly_records ADD COLUMN IF NOT EXISTS defect_description TEXT",
+        "ALTER TABLE anomaly_records ADD COLUMN IF NOT EXISTS gpt4v_reasoning TEXT",
+    ] {
+        sqlx::query(alter_sql)
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Column migration failed: {}", e)))?;
+    }
 
     // Create index for pending reviews (active learning query)
     sqlx::query(

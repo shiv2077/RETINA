@@ -2,119 +2,122 @@
 Model Factory
 =============
 
-Factory function for creating anomaly detection model instances.
+Single entry point for obtaining anomaly detection model instances.
 
-This module provides a single entry point for obtaining model instances,
-making it easy to swap between stub and real implementations.
+Registry
+--------
+- patchcore → PatchCoreReal  (real ResNet50 / Anomalib implementation)
+- padim     → PatchCoreStub  (stub — PaDiM integration pending)
+- winclip   → WinCLIPStub    (legacy stub — superseded by GPT-4V)
+- gpt4v     → GPT4VDetector  (real GPT-4o vision API)
+- pushpull  → PushPullStub   (stub — supervised model pending)
+
+To test without API keys or GPU, swap back to stubs:
+    _MODEL_REGISTRY[ModelType.PATCHCORE] = PatchCoreStub
+    _MODEL_REGISTRY[ModelType.GPT4V] = WinCLIPStub
 """
+
+from __future__ import annotations
 
 import structlog
 
+from ..config import get_settings
 from ..schemas import ModelType
 from .base import AnomalyDetector
+from .gpt4v_detector import GPT4VDetector
+from .patchcore_real import PatchCoreReal
 from .patchcore_stub import PatchCoreStub
 from .pushpull_stub import PushPullStub
 from .winclip_stub import WinCLIPStub
 
 logger = structlog.get_logger()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Registry & cache
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Model registry: maps model type to class
+# Maps ModelType → class.  Swap entries here to switch implementations.
 _MODEL_REGISTRY: dict[ModelType, type[AnomalyDetector]] = {
-    ModelType.PATCHCORE: PatchCoreStub,
-    ModelType.PADIM: PatchCoreStub,  # Reuse PatchCore stub for PaDiM (similar approach)
-    ModelType.WINCLIP: WinCLIPStub,
-    ModelType.PUSHPULL: PushPullStub,
+    ModelType.PATCHCORE: PatchCoreReal,    # Real k-NN memory-bank model
+    ModelType.PADIM: PatchCoreStub,        # TODO: real PaDiM via Anomalib
+    ModelType.WINCLIP: WinCLIPStub,        # Legacy stub (kept for compat)
+    ModelType.GPT4V: GPT4VDetector,        # Real GPT-4o VLM detector
+    ModelType.PUSHPULL: PushPullStub,      # TODO: real supervised model
 }
 
-# Cache of loaded model instances
+# Loaded model instances (one per ModelType, created lazily)
 _MODEL_CACHE: dict[ModelType, AnomalyDetector] = {}
 
 
 def get_model(model_type: ModelType, cached: bool = True) -> AnomalyDetector:
     """
-    Get an anomaly detection model instance.
-    
-    This factory function returns the appropriate model implementation
-    for the given model type. By default, models are cached to avoid
-    repeated loading of weights.
-    
+    Return an anomaly detection model instance, initialising it if needed.
+
     Parameters
     ----------
     model_type : ModelType
-        The type of model to retrieve
+        Which model to load.
     cached : bool
-        If True, return cached instance if available.
-        If False, create a new instance.
-        
+        If True (default), reuse the cached instance to avoid reloading
+        weights on every job.
+
     Returns
     -------
     AnomalyDetector
-        Model instance ready for inference
-        
+        Model instance ready for inference.
+
     Raises
     ------
     ValueError
-        If model_type is not recognized
-        
-    Example
-    -------
-    >>> from retina_worker.schemas import ModelType
-    >>> model = get_model(ModelType.PATCHCORE)
-    >>> result = model.predict("test_image")
-    
-    Notes
-    -----
-    When integrating real models, update the registry:
-    
-    ```python
-    _MODEL_REGISTRY[ModelType.PATCHCORE] = RealPatchCore
-    ```
-    
-    The factory pattern allows seamless swapping between stub and
-    real implementations without changing client code.
+        If model_type is not in the registry.
+    RuntimeError
+        If the model fails to load (e.g. missing API key or checkpoint).
     """
     if model_type not in _MODEL_REGISTRY:
-        raise ValueError(f"Unknown model type: {model_type}")
-    
-    # Return cached instance if available and caching enabled
+        raise ValueError(
+            f"Unknown model type: {model_type!r}. "
+            f"Available: {[mt.value for mt in _MODEL_REGISTRY]}"
+        )
+
     if cached and model_type in _MODEL_CACHE:
         logger.debug("Returning cached model", model_type=model_type.value)
         return _MODEL_CACHE[model_type]
-    
-    # Create new instance
+
     model_class = _MODEL_REGISTRY[model_type]
-    model = model_class()
-    
-    # Load the model
-    logger.info("Loading model", model_type=model_type.value, model_class=model_class.__name__)
+    settings = get_settings()
+
+    # Pass constructor kwargs for models that need config values.
+    if model_type == ModelType.GPT4V:
+        model = GPT4VDetector(
+            api_key=settings.openai_api_key,
+            product_type=settings.gpt4v_product_type,
+            max_retries=settings.gpt4v_max_retries,
+            anomaly_threshold=settings.anomaly_threshold,
+        )
+    elif model_type == ModelType.PATCHCORE:
+        model = PatchCoreReal(
+            checkpoint_path=settings.patchcore_checkpoint_path,
+            anomaly_threshold=settings.anomaly_threshold,
+        )
+    else:
+        model = model_class()
+
+    logger.info("Loading model", model_type=model_type.value, class_name=model_class.__name__)
     model.load_model()
-    
-    # Cache if enabled
+
     if cached:
         _MODEL_CACHE[model_type] = model
-    
+
     return model
 
 
 def clear_model_cache() -> None:
-    """
-    Clear the model cache.
-    
-    Useful for testing or when memory needs to be freed.
-    """
+    """Clear cached model instances (useful in tests or memory-constrained envs)."""
     global _MODEL_CACHE
     _MODEL_CACHE = {}
     logger.info("Model cache cleared")
 
 
 def get_cached_models() -> list[str]:
-    """
-    Get list of currently cached model names.
-    
-    Returns
-    -------
-    list[str]
-        Names of cached models
-    """
-    return [mt.value for mt in _MODEL_CACHE.keys()]
+    """Return list of currently cached model names."""
+    return [mt.value for mt in _MODEL_CACHE]

@@ -98,6 +98,12 @@ class AnomalyPrediction:
     category_probabilities: Optional[dict[str, float]] = field(default_factory=dict)
     embedding_distance: Optional[float] = None
 
+    # GPT-4V / VLM specific outputs (optional)
+    # Populated when model="gpt4v"; surfaced to operators on Expert Review page.
+    defect_description: Optional[str] = None
+    defect_location: Optional[str] = None
+    gpt4v_reasoning: Optional[str] = None
+
 
 class AnomalyDetector(ABC):
     """

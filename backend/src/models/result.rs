@@ -20,7 +20,7 @@ use super::{JobStatus, ModelType, PipelineStage};
 
 /// Stage 1 (unsupervised) specific output fields.
 ///
-/// These fields are populated when running PatchCore, PaDiM, or WinCLIP.
+/// These fields are populated when running PatchCore, PaDiM, WinCLIP, or GPT-4V.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Stage1Output {
     /// Whether a spatial anomaly heatmap was generated
@@ -38,6 +38,18 @@ pub struct Stage1Output {
     /// CLIP text-image similarity score (WinCLIP only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clip_similarity: Option<f64>,
+
+    /// Human-readable defect description from GPT-4o (null if normal or non-VLM model)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defect_description: Option<String>,
+
+    /// Spatial description of defect location from GPT-4o (e.g. "top-left corner")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defect_location: Option<String>,
+
+    /// One-sentence reasoning from GPT-4o explaining the prediction
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpt4v_reasoning: Option<String>,
 }
 
 /// Stage 2 (supervised) specific output fields.

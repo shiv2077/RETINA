@@ -21,7 +21,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 // =============================================================================
 
 /** Model types available for inference */
-export type ModelType = 'patchcore' | 'padim' | 'winclip' | 'pushpull';
+export type ModelType = 'patchcore' | 'padim' | 'winclip' | 'gpt4v' | 'pushpull';
 
 /** Pipeline stage */
 export type PipelineStage = 1 | 2;
@@ -42,6 +42,8 @@ export interface SubmitImageRequest {
   model_type?: ModelType;
   priority?: number;
   source?: string;
+  /** Absolute path to image on shared volume (set after uploading via /api/images/upload) */
+  image_path?: string;
 }
 
 /** Request to submit a label */
@@ -113,6 +115,12 @@ export interface InferenceResult {
   active_learning: ActiveLearningMeta;
   error?: { code: string; message: string };
   processing_time_ms?: number;
+  /** Human-readable defect description from GPT-4o (null for non-VLM results) */
+  defect_description?: string | null;
+  /** Spatial description of defect location from GPT-4o */
+  defect_location?: string | null;
+  /** One-sentence GPT-4o reasoning for the prediction */
+  gpt4v_reasoning?: string | null;
 }
 
 /** Result query response */
@@ -317,18 +325,20 @@ export async function getHealth(): Promise<HealthResponse> {
 
 /**
  * Get the current system status.
+ * Backend route: GET /api/system/status
  */
 export async function getSystemStatus(): Promise<SystemStatusResponse> {
-  return apiFetch<SystemStatusResponse>('/status');
+  return apiFetch<SystemStatusResponse>('/api/system/status');
 }
 
 /**
  * Submit an image for anomaly detection.
+ * Backend route: POST /api/images/submit
  */
 export async function submitImage(
   request: SubmitImageRequest
 ): Promise<SubmitImageResponse> {
-  return apiFetch<SubmitImageResponse>('/inference/predict', {
+  return apiFetch<SubmitImageResponse>('/api/images/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -337,20 +347,22 @@ export async function submitImage(
 
 /**
  * Get the inference result for a job or image.
+ * Backend route: GET /api/images/{id}/result
  *
  * @param id - Either a job_id (UUID) or image_id
  */
 export async function getResult(id: string): Promise<ResultResponse> {
-  return apiFetch<ResultResponse>('/inference/history');
+  return apiFetch<ResultResponse>(`/api/images/${encodeURIComponent(id)}/result`);
 }
 
 /**
  * Submit a label for an image (active learning).
+ * Backend route: POST /api/labels/submit
  */
 export async function submitLabel(
   request: SubmitLabelRequest
 ): Promise<SubmitLabelResponse> {
-  return apiFetch<SubmitLabelResponse>('/labels/submit', {
+  return apiFetch<SubmitLabelResponse>('/api/labels/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -359,9 +371,10 @@ export async function submitLabel(
 
 /**
  * Get samples from the active learning labeling pool.
+ * Backend route: GET /api/labels/pool
  */
 export async function getLabelingPool(): Promise<LabelingPoolResponse> {
-  return apiFetch<LabelingPoolResponse>('/pipeline/stage2/samples');
+  return apiFetch<LabelingPoolResponse>('/api/labels/pool');
 }
 
 // =============================================================================

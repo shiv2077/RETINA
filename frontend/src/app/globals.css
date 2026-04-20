@@ -3,120 +3,146 @@
 @tailwind utilities;
 
 /* =============================================================================
-   RETINA - Global Styles
+   RETINA — Global Styles
+   KU Leuven / Flanders Make design system
    ============================================================================= */
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --font-inter: 'Inter', system-ui, sans-serif;
+  --font-jetbrains: 'JetBrains Mono', monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Inter, system-ui, sans-serif;
+  background-color: #0C0C0E;
+  color: #F5F5F7;
+  font-family: var(--font-inter);
+  min-height: 100vh;
+  /* Subtle KU Leuven blue radial — barely visible, anchors brand */
+  background-image: radial-gradient(
+    ellipse 60% 40% at 50% -10%,
+    rgba(0, 51, 102, 0.35),
+    transparent
+  );
 }
 
 /* =============================================================================
-   Custom Components
+   Glass card — use sparingly, only on data panels
    ============================================================================= */
 
-@layer components {
-  /* Card component */
-  .card {
-    @apply bg-white dark:bg-gray-800 rounded-lg shadow-md p-6;
-  }
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 16px;
+}
 
-  /* Status badge */
-  .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
-  }
-
-  .badge-success {
-    @apply bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200;
-  }
-
-  .badge-warning {
-    @apply bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200;
-  }
-
-  .badge-danger {
-    @apply bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200;
-  }
-
-  .badge-info {
-    @apply bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200;
-  }
-
-  /* Button styles */
-  .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 rounded-md font-medium
-           transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2
-           disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-
-  .btn-primary {
-    @apply btn bg-blue-800 text-white hover:bg-blue-900 focus:ring-blue-500;
-  }
-
-  .btn-secondary {
-    @apply btn bg-gray-200 text-gray-900 hover:bg-gray-300 focus:ring-gray-500
-           dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600;
-  }
-
-  .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
-  }
-
-  .btn-success {
-    @apply btn bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
-  }
-
-  /* Input styles */
-  .input {
-    @apply block w-full rounded-md border-gray-300 shadow-sm
-           focus:border-blue-500 focus:ring-blue-500
-           dark:bg-gray-800 dark:border-gray-600 dark:text-white
-           px-3 py-2 border;
-  }
-
-  /* Progress bar */
-  .progress-bar {
-    @apply h-2 bg-gray-200 rounded-full overflow-hidden dark:bg-gray-700;
-  }
-
-  .progress-bar-fill {
-    @apply h-full bg-blue-800 transition-all duration-300;
-  }
+.glass:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 /* =============================================================================
-   Anomaly Score Visualization
+   Solid card — content cards that don't need blur
    ============================================================================= */
 
-.anomaly-score-bar {
-  @apply h-4 rounded-full overflow-hidden bg-gray-200 dark:bg-gray-700;
+.card {
+  background: #141416;
+  border: 1px solid #2A2A2E;
+  border-radius: 16px;
 }
 
-.anomaly-score-fill {
-  @apply h-full transition-all duration-300;
+/* =============================================================================
+   KU Leuven blue glow — for active/primary elements
+   ============================================================================= */
+
+.kul-glow {
+  box-shadow: 0 0 0 1px rgba(0, 51, 102, 0.5),
+              0 0 20px rgba(0, 102, 204, 0.2);
 }
 
-.anomaly-score-fill.normal {
-  @apply bg-gradient-to-r from-green-400 to-green-600;
+/* =============================================================================
+   Anomaly alert pulse
+   ============================================================================= */
+
+@keyframes alert-pulse {
+  0%, 100% {
+    border-color: rgba(248, 113, 113, 0.5);
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.3);
+  }
+  50% {
+    border-color: rgba(248, 113, 113, 0.9);
+    box-shadow: 0 0 0 4px rgba(248, 113, 113, 0);
+  }
 }
 
-.anomaly-score-fill.uncertain {
-  @apply bg-gradient-to-r from-amber-400 to-amber-600;
+.alert-pulse {
+  animation: alert-pulse 2s ease-in-out infinite;
 }
 
-.anomaly-score-fill.anomaly {
-  @apply bg-gradient-to-r from-red-400 to-red-600;
+/* =============================================================================
+   Shimmer skeleton
+   ============================================================================= */
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #1C1C1F 25%,
+    #2A2A2E 50%,
+    #1C1C1F 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* =============================================================================
+   Scrollbar — thin, dark
+   ============================================================================= */
+
+::-webkit-scrollbar         { width: 4px; height: 4px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { background: #2A2A2E; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #3A3A3E; }
+
+/* =============================================================================
+   Focus ring — KU Leuven blue
+   ============================================================================= */
+
+:focus-visible {
+  outline: 2px solid #0066CC;
+  outline-offset: 2px;
+}
+
+/* =============================================================================
+   Selection
+   ============================================================================= */
+
+::selection {
+  background: rgba(0, 102, 204, 0.3);
+  color: #F5F5F7;
+}
+
+/* =============================================================================
+   Anomaly score bar gradient fill
+   ============================================================================= */
+
+.score-gradient {
+  background: linear-gradient(to right, #34D399 0%, #FBBF24 50%, #F87171 100%);
+  background-size: 200% 100%;
 }

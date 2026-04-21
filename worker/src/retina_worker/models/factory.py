@@ -1,8 +1,17 @@
 """
-Model Factory
-=============
+Model Factory — DEPRECATED
+==========================
 
-Single entry point for obtaining anomaly detection model instances.
+.. deprecated::
+    The worker no longer uses this factory. Stage 1 routing now goes through
+    ``models.patchcore_registry.PatchCoreRegistry`` (per-category checkpoints)
+    and ``models.vlm_router.VLMRouter`` (product identification, defect
+    description, zero-shot fallback). See ``docs/vlm_router_design.md`` and
+    ``docs/integration_plan.md``.
+
+    This module is retained for backward compatibility with tests and any
+    external callers still importing ``get_model`` / ``ModelType`` dispatch.
+    Do not add new call sites.
 
 Registry
 --------

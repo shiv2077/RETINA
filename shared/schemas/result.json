@@ -137,6 +137,77 @@
     "processing_time_ms": {
       "type": "integer",
       "description": "Inference processing time in milliseconds"
+    },
+    "defect_description": {
+      "type": ["string", "null"],
+      "description": "Human-readable defect description produced by the VLM (null if no VLM call was made or image was clean)."
+    },
+    "defect_location": {
+      "type": ["string", "null"],
+      "description": "Spatial description of the defect location from the VLM (e.g. 'upper-left quadrant')."
+    },
+    "gpt4v_reasoning": {
+      "type": ["string", "null"],
+      "description": "Legacy one-sentence reasoning string from the GPT-4V detector. Preserved for backward compatibility; new code should use natural_description."
+    },
+    "product_class": {
+      "type": ["string", "null"],
+      "description": "Routed product category for Stage 1 (one of the trained PatchCore categories) or 'unknown' for zero-shot fallback."
+    },
+    "product_confidence": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Confidence of the VLM product identification (0.0-1.0)."
+    },
+    "natural_description": {
+      "type": ["string", "null"],
+      "description": "Operator-facing single-sentence defect description from the VLM router's describe_defect call."
+    },
+    "defect_severity": {
+      "type": ["string", "null"],
+      "enum": ["minor", "moderate", "severe", null],
+      "description": "Severity bucket assigned by the VLM. Null when no defect was described."
+    },
+    "defect_type": {
+      "type": ["string", "null"],
+      "description": "Defect-type label from the VLM (e.g. 'scratch', 'crack', 'contamination'). Separate from Stage-2 multi-class output."
+    },
+    "routing_reason": {
+      "type": ["string", "null"],
+      "enum": [
+        "patchcore_high_confidence",
+        "patchcore_low_confidence",
+        "patchcore_confirmed_anomaly",
+        "unknown_product_zero_shot",
+        null
+      ],
+      "description": "Which branch of the router fired. Records made before the router existed have this as null."
+    },
+    "vlm_model_used": {
+      "type": ["string", "null"],
+      "enum": ["gpt-4o", "gpt-4o-mini", null],
+      "description": "Which OpenAI model was invoked for this result, if any."
+    },
+    "vlm_api_cost_estimate_usd": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "description": "Rough USD cost estimate for the VLM calls that produced this result. Sum of per-call estimates."
+    },
+    "stage2_verdict": {
+      "type": ["string", "null"],
+      "enum": ["confirmed_anomaly", "rejected_false_positive", "uncertain", null],
+      "description": "Stage 2 supervised refiner outcome. Null when Stage 2 did not run."
+    },
+    "stage2_defect_class": {
+      "type": ["string", "null"],
+      "description": "Defect class named by Stage 2 (null if rejected or uncertain)."
+    },
+    "stage2_confidence": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Stage 2 verdict confidence (0.0-1.0)."
     }
   },
   "examples": [

@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Sparkles,
   SkipForward,
+  Spline,
 } from 'lucide-react';
 
 // Decospan Dutch canonical names per CLAUDE.md §6.2
@@ -42,6 +43,13 @@ interface BoundingBox {
   height: number;
   defect_type: string;
   confidence: number;
+}
+
+interface Polygon {
+  id: string;
+  vertices: { x: number; y: number }[];
+  classKey: string;
+  color: string;
 }
 
 interface Sample extends api.CascadeQueueItem {
@@ -72,9 +80,6 @@ export default function LabelPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState('cascade');
-  const [categories, setCategories] = useState<string[]>(['cascade']);
-  const [isCascadeMode, setIsCascadeMode] = useState(true);
 
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
   const [selectedDefect, setSelectedDefect] = useState<string>(DEFECT_CATEGORIES[0].name);
@@ -84,12 +89,14 @@ export default function LabelPage() {
   const [notes, setNotes] = useState('');
   const [showHeatmap, setShowHeatmap] = useState(true);
 
-  const [activeTool, setActiveTool] = useState<'select' | 'box'>('box');
+  const [activeTool, setActiveTool] = useState<'select' | 'box' | 'polygon'>('box');
+  const [polygons, setPolygons] = useState<Polygon[]>([]);
+  const [currentPolygon, setCurrentPolygon] = useState<{ vertices: { x: number; y: number }[] } | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
 
   const [stats, setStats] = useState({ total: 0, normal: 0, anomaly: 0, uncertain: 0, queueSize: 0 });
-  const [cascadeStats, setCascadeStats] = useState<api.CascadeQueueStats | null>(null);
   const [sessionReviewCount, setSessionReviewCount] = useState(0);
   const [pendingLabel, setPendingLabel] = useState<'normal' | 'anomaly' | 'uncertain' | null>(null);
 
@@ -99,45 +106,37 @@ export default function LabelPage() {
 
   const currentSample = samples[currentIndex];
 
-  // Fetch categories
-  useEffect(() => {
-    const fetchCategories = async () => {
-      try {
-        const sys = await api.getSystemStatus().catch(() => null);
-        if (sys) setCategories(['cascade']);
-      } catch { /* ignore */ }
-    };
-    fetchCategories();
+  const loadPool = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.getLabelPoolV2(50);
+      const asSamples: Sample[] = res.pool.map((p) => ({
+        image_id: p.image_id,
+        image_path: p.image_id, // canvas URL builder uses this to fetch /api/images/{id}
+        anomaly_score: p.anomaly_score ?? undefined,
+        uncertainty_score: p.uncertainty_score ?? undefined,
+        bgad_score: p.anomaly_score ?? p.score ?? 0,
+        routing_case: 'C_uncertain_vlm_routed',
+        status: 'pending',
+        created_at: new Date().toISOString(),
+      } as Sample));
+      setSamples(asSamples);
+      setCurrentIndex(0);
+      setBoundingBoxes([]);
+      setPolygons([]);
+      setCurrentPolygon(null);
+      setStats(prev => ({ ...prev, queueSize: res.count }));
+    } catch (e) {
+      setError(`Cannot connect to API: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Fetch samples
   useEffect(() => {
-    const fetchSamples = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        if (selectedCategory === 'cascade') {
-          setIsCascadeMode(true);
-          const response = await api.fetchAnnotationQueue(50);
-          if (response.success) {
-            setSamples(response.queue as unknown as Sample[]);
-            setCurrentIndex(0);
-            setBoundingBoxes([]);
-            setStats(prev => ({ ...prev, queueSize: response.stats.pending }));
-            const cs = await api.getCascadeStats().catch(() => null);
-            if (cs) setCascadeStats(cs);
-          }
-        } else {
-          setIsCascadeMode(false);
-        }
-      } catch {
-        setError('Cannot connect to backend');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchSamples();
-  }, [selectedCategory]);
+    loadPool();
+  }, [loadPool]);
 
   // ─── Canvas draw logic (preserved exactly) ───────────────────────────────────
 
@@ -197,7 +196,70 @@ export default function LabelPage() {
       ctx.strokeRect(currentBox.x ?? 0, currentBox.y ?? 0, currentBox.width ?? 0, currentBox.height ?? 0);
       ctx.setLineDash([]);
     }
-  }, [boundingBoxes, currentBox, drawStart, selectedBoxId, showHeatmap, currentSample, selectedDefect]);
+
+    // ── Committed polygons ──────────────────────────────────────────────
+    polygons.forEach((poly) => {
+      if (poly.vertices.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(poly.vertices[0].x, poly.vertices[0].y);
+      for (let i = 1; i < poly.vertices.length; i++) {
+        ctx.lineTo(poly.vertices[i].x, poly.vertices[i].y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = poly.color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = poly.color + '33'; // ~20% alpha
+      ctx.fill();
+      ctx.fillStyle = poly.color;
+      poly.vertices.forEach((v) => {
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      // Class label
+      const first = poly.vertices[0];
+      const labelText = poly.classKey.toUpperCase();
+      ctx.font = '10px monospace';
+      const tw = ctx.measureText(labelText).width + 8;
+      ctx.fillStyle = poly.color;
+      ctx.fillRect(first.x, first.y - 18, tw, 18);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(labelText, first.x + 4, first.y - 5);
+    });
+
+    // ── In-progress polygon ─────────────────────────────────────────────
+    if (currentPolygon && currentPolygon.vertices.length > 0) {
+      const cat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+      const color = cat?.color ?? '#ffffff';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      // solid edges between placed vertices
+      ctx.beginPath();
+      ctx.moveTo(currentPolygon.vertices[0].x, currentPolygon.vertices[0].y);
+      for (let i = 1; i < currentPolygon.vertices.length; i++) {
+        ctx.lineTo(currentPolygon.vertices[i].x, currentPolygon.vertices[i].y);
+      }
+      ctx.stroke();
+      // dashed preview from last vertex to cursor
+      if (mousePos) {
+        const last = currentPolygon.vertices[currentPolygon.vertices.length - 1];
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(mousePos.x, mousePos.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // vertex dots (slightly larger while editable)
+      ctx.fillStyle = color;
+      currentPolygon.vertices.forEach((v) => {
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+  }, [boundingBoxes, currentBox, drawStart, selectedBoxId, showHeatmap, currentSample, selectedDefect, polygons, currentPolygon, mousePos]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -213,7 +275,7 @@ export default function LabelPage() {
       canvas.height = img.height;
       redrawCanvas();
     };
-    img.src = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/images/${currentSample.image_path}`;
+    img.src = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/api/images/${currentSample.image_id}`;
     img.onerror = () => {
       canvas.width = 512;
       canvas.height = 512;
@@ -242,17 +304,57 @@ export default function LabelPage() {
     };
   };
 
+  const closePolygon = useCallback(() => {
+    if (!currentPolygon || currentPolygon.vertices.length < 3) return;
+    const cat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+    const id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `poly_${Date.now()}`;
+    setPolygons(prev => [...prev, {
+      id,
+      vertices: currentPolygon.vertices,
+      classKey: selectedDefect,
+      color: cat?.color ?? '#ffffff',
+    }]);
+    setCurrentPolygon(null);
+  }, [currentPolygon, selectedDefect]);
+
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activeTool !== 'box') return;
     const coords = getCanvasCoords(e);
+
+    if (activeTool === 'polygon') {
+      if (e.button === 2) {
+        // Right-click: remove last vertex (undo)
+        e.preventDefault();
+        setCurrentPolygon(prev => {
+          if (!prev || prev.vertices.length === 0) return null;
+          const next = prev.vertices.slice(0, -1);
+          return next.length === 0 ? null : { vertices: next };
+        });
+        return;
+      }
+      if (e.button === 0) {
+        // Left-click: add vertex (start a new polygon if none in progress)
+        setCurrentPolygon(prev => ({
+          vertices: [...(prev?.vertices ?? []), coords],
+        }));
+      }
+      return;
+    }
+
+    if (activeTool !== 'box') return;
     setIsDrawing(true);
     setDrawStart(coords);
     setCurrentBox({ x: coords.x, y: coords.y, width: 0, height: 0 });
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !drawStart || activeTool !== 'box') return;
     const coords = getCanvasCoords(e);
+    if (activeTool === 'polygon' && currentPolygon) {
+      setMousePos(coords);
+      return;
+    }
+    if (!isDrawing || !drawStart || activeTool !== 'box') return;
     setCurrentBox({
       x: Math.min(drawStart.x, coords.x),
       y: Math.min(drawStart.y, coords.y),
@@ -280,77 +382,66 @@ export default function LabelPage() {
     setCurrentBox(null);
   };
 
+  const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (activeTool === 'polygon') {
+      e.preventDefault();
+      closePolygon();
+    }
+  };
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (activeTool === 'polygon') {
+      e.preventDefault();
+    }
+  };
+
   // ─── Submission ───────────────────────────────────────────────────────────────
 
   const submitAnnotation = useCallback(async (label: 'normal' | 'anomaly' | 'uncertain') => {
     if (!currentSample) return;
+    const selectedCat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
     try {
-      if (isCascadeMode) {
-        const defectTypes = Array.from(new Set(boundingBoxes.map(b => b.defect_type)));
-        const submission: api.CascadeAnnotationSubmission = {
-          image_id: currentSample.image_id,
-          label: label === 'uncertain' ? 'anomaly' : label,
-          bounding_boxes: boundingBoxes,
-          defect_types: defectTypes,
-          notes,
-        };
-        const result = await api.submitCascadeAnnotation(submission);
-        if (result.success) {
-          setSessionReviewCount(c => c + 1);
-          setPendingLabel(null);
-          if (currentIndex < samples.length - 1) {
-            setCurrentIndex(currentIndex + 1);
-            setBoundingBoxes([]);
-            setNotes('');
-          } else {
-            const response = await api.fetchAnnotationQueue(50);
-            if (response.success && response.queue.length > 0) {
-              setSamples(response.queue as unknown as Sample[]);
-              setCurrentIndex(0);
-              setBoundingBoxes([]);
-            } else {
-              setError('No more items in cascade queue');
-            }
-          }
-        }
-      } else {
-        const annotation: Annotation = {
-          image_id: currentSample.image_id,
-          label,
-          bounding_boxes: boundingBoxes,
-          defect_types: Array.from(new Set(boundingBoxes.map(b => b.defect_type))),
-          notes,
-          labeled_by: 'expert',
-          timestamp: new Date().toISOString(),
-        };
-        await api.submitLabel({
-          image_id: annotation.image_id,
-          is_anomaly: label === 'anomaly',
-          confidence: 'high',
-          labeled_by: 'expert',
-          notes,
-        });
-        setSessionReviewCount(c => c + 1);
-        if (currentIndex < samples.length - 1) {
-          setCurrentIndex(currentIndex + 1);
-          setBoundingBoxes([]);
-          setNotes('');
-        }
-      }
-    } catch (e) {
-      setError(`Failed to submit: ${e}`);
-    }
-  }, [currentSample, isCascadeMode, boundingBoxes, notes, currentIndex, samples.length]);
-
-  const handleSkip = useCallback(async () => {
-    if (!currentSample) return;
-    try {
-      await api.skipCascadeItem(currentSample.image_id);
+      await api.submitLabelV2({
+        image_id: currentSample.image_id,
+        product_class: currentSample.routing_case ? 'unknown' : 'unknown',  // product name unavailable here — API stores what frontend sends
+        label: label === 'uncertain' ? 'anomaly' : label,
+        defect_class: selectedCat?.name ?? null,
+        boxes: boundingBoxes.map(b => ({
+          x: b.x, y: b.y, width: b.width, height: b.height,
+          defect_type: b.defect_type, confidence: b.confidence,
+        })),
+        polygons: polygons.map(p => ({
+          vertices: p.vertices,
+          class: p.classKey,
+        })),
+        operator_id: 'expert',
+        notes,
+      });
+      setSessionReviewCount(c => c + 1);
+      setPendingLabel(null);
       if (currentIndex < samples.length - 1) {
         setCurrentIndex(currentIndex + 1);
         setBoundingBoxes([]);
+        setPolygons([]);
+        setCurrentPolygon(null);
+        setNotes('');
+      } else {
+        // Reload the pool — we're at the end
+        await loadPool();
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      setError(`Failed to submit: ${(e as Error).message}`);
+    }
+  }, [currentSample, boundingBoxes, polygons, notes, currentIndex, samples.length, selectedDefect, loadPool]);
+
+  const handleSkip = useCallback(async () => {
+    if (!currentSample) return;
+    if (currentIndex < samples.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+      setBoundingBoxes([]);
+      setPolygons([]);
+      setCurrentPolygon(null);
+    }
   }, [currentSample, currentIndex, samples.length]);
 
   // ─── Keyboard shortcuts per CLAUDE.md ────────────────────────────────────────
@@ -358,19 +449,37 @@ export default function LabelPage() {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       switch (e.key) {
-        case 'Enter':      if (pendingLabel) submitAnnotation(pendingLabel); break;
+        case 'Enter':
+          // Polygon mode: Enter closes an in-progress polygon (>=3 verts).
+          // Otherwise falls through to normal label submission.
+          if (activeTool === 'polygon' && currentPolygon && currentPolygon.vertices.length >= 3) {
+            closePolygon();
+          } else if (pendingLabel) {
+            submitAnnotation(pendingLabel);
+          }
+          break;
+        case 'Escape':
+          if (activeTool === 'polygon' && currentPolygon) {
+            setCurrentPolygon(null);
+          }
+          break;
         case 's': case 'S': handleSkip(); break;
         case 'z': case 'Z':
-          setBoundingBoxes(prev => prev.slice(0, -1));
+          if (activeTool === 'polygon') {
+            setPolygons(prev => prev.slice(0, -1));
+          } else {
+            setBoundingBoxes(prev => prev.slice(0, -1));
+          }
           break;
         case 'b': case 'B': setActiveTool('box'); break;
         case 'v': case 'V': setActiveTool('select'); break;
+        case 'p': case 'P': setActiveTool('polygon'); break;
         case 'h': case 'H': setShowHeatmap(v => !v); break;
         case 'ArrowLeft':
-          if (currentIndex > 0) { setCurrentIndex(c => c - 1); setBoundingBoxes([]); }
+          if (currentIndex > 0) { setCurrentIndex(c => c - 1); setBoundingBoxes([]); setPolygons([]); setCurrentPolygon(null); }
           break;
         case 'ArrowRight':
-          if (currentIndex < samples.length - 1) { setCurrentIndex(c => c + 1); setBoundingBoxes([]); }
+          if (currentIndex < samples.length - 1) { setCurrentIndex(c => c + 1); setBoundingBoxes([]); setPolygons([]); setCurrentPolygon(null); }
           break;
         default: {
           const cat = DEFECT_CATEGORIES.find(c => c.shortcut === e.key);
@@ -380,7 +489,7 @@ export default function LabelPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentIndex, samples.length, pendingLabel, submitAnnotation, handleSkip]);
+  }, [currentIndex, samples.length, pendingLabel, submitAnnotation, handleSkip, activeTool, currentPolygon, closePolygon]);
 
   const progressPct = samples.length > 0 ? ((currentIndex + 1) / samples.length) * 100 : 0;
   const vlmReasoning =
@@ -415,37 +524,19 @@ export default function LabelPage() {
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
-              {isCascadeMode && (
-                <>
-                  <div className="w-px h-3 bg-surface-border" />
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 bg-state-warn rounded-sm" />
-                    Queue: {stats.queueSize}
-                  </span>
-                  {cascadeStats && (
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 bg-state-pass rounded-sm" />
-                      Labeled: {cascadeStats.labeled}
-                    </span>
-                  )}
-                </>
-              )}
+              <div className="w-px h-3 bg-surface-border" />
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-state-warn rounded-sm" />
+                Queue: {stats.queueSize}
+              </span>
             </>
           )}
         </div>
 
-        {/* Category selector */}
-        <select
-          value={selectedCategory}
-          onChange={e => setSelectedCategory(e.target.value)}
-          className="px-3 py-1.5 bg-surface-raised border border-surface-border rounded text-xs font-mono focus:outline-none focus:border-kul-accent transition-colors text-text-primary"
-        >
-          {categories.map(cat => (
-            <option key={cat} value={cat} className="bg-[#0C0C0E]">
-              {cat.toUpperCase()}
-            </option>
-          ))}
-        </select>
+        {/* Right-side spacer (category dropdown removed — it was cascade-only) */}
+        <div className="text-[10px] font-mono uppercase tracking-widest text-text-disabled">
+          AL Pool · retina:al:pool
+        </div>
       </header>
 
       {/* Body */}
@@ -469,18 +560,28 @@ export default function LabelPage() {
             </button>
           </div>
         ) : samples.length === 0 ? (
-          <div className="w-full flex flex-col items-center justify-center text-center">
+          <div className="w-full flex flex-col items-center justify-center text-center px-6">
             <Inbox className="w-12 h-12 text-surface-border mx-auto mb-6" />
-            <p className="text-sm font-medium text-text-primary mb-2">No Samples Available</p>
-            <p className="text-[11px] font-mono text-text-tertiary mb-8 max-w-sm mx-auto">
-              The inference cascade queue is currently empty.
+            <p className="text-sm font-medium text-text-primary mb-2">Queue is empty</p>
+            <p className="text-[11px] font-mono text-text-tertiary mb-8 max-w-md mx-auto leading-relaxed">
+              Submit an image with a Stage 1 anomaly score in the uncertainty zone
+              [0.5, 0.9) to populate this queue. Images that PatchCore flags as
+              ambiguous land here for expert labels.
             </p>
-            <Link
-              href="/"
-              className="px-6 py-2 bg-kul-blue hover:bg-kul-light text-white rounded text-[11px] font-mono uppercase tracking-widest transition-colors inline-block"
-            >
-              Return to Dashboard
-            </Link>
+            <div className="flex gap-2">
+              <button
+                onClick={() => loadPool()}
+                className="px-6 py-2 bg-surface-raised hover:bg-surface-overlay border border-surface-border rounded text-[11px] font-mono uppercase tracking-widest transition-colors"
+              >
+                Refresh Queue
+              </button>
+              <Link
+                href="/submit"
+                className="px-6 py-2 bg-kul-blue hover:bg-kul-light text-white rounded text-[11px] font-mono uppercase tracking-widest transition-colors inline-block"
+              >
+                Submit Image
+              </Link>
+            </div>
           </div>
         ) : (
           <>
@@ -516,8 +617,9 @@ export default function LabelPage() {
                 </h3>
                 <div className="space-y-1.5">
                   {([
-                    { tool: 'select' as const, icon: MousePointer2, label: 'Select Area', kbd: 'V' },
-                    { tool: 'box' as const,    icon: SquareDashed,  label: 'Bounding Box', kbd: 'B' },
+                    { tool: 'select' as const,  icon: MousePointer2, label: 'Select Area', kbd: 'V' },
+                    { tool: 'box' as const,     icon: SquareDashed,  label: 'Bounding Box', kbd: 'B' },
+                    { tool: 'polygon' as const, icon: Spline,        label: 'Polygon',      kbd: 'P' },
                   ] as const).map(({ tool, icon: Icon, label, kbd }) => (
                     <button
                       key={tool}
@@ -621,12 +723,14 @@ export default function LabelPage() {
                       transformOrigin: 'center center',
                       maxWidth: '100%',
                       maxHeight: '100%',
-                      cursor: activeTool === 'box' ? 'crosshair' : 'default',
+                      cursor: activeTool === 'box' || activeTool === 'polygon' ? 'crosshair' : 'default',
                     }}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
+                    onDoubleClick={handleDoubleClick}
+                    onContextMenu={handleContextMenu}
                   />
                 </div>
               </div>
@@ -674,7 +778,7 @@ export default function LabelPage() {
             <div className="w-80 bg-[#141416] border-l border-surface-border flex flex-col flex-shrink-0">
 
               {/* Inference telemetry */}
-              {isCascadeMode && currentSample && (
+              {currentSample && (
                 <div className="p-5 border-b border-surface-border">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-[10px] uppercase tracking-widest text-text-tertiary font-bold">

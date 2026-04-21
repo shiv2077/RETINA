@@ -10,29 +10,21 @@ import {
   BarChart2,
   Sparkles,
   Tag,
+  Layers,
 } from 'lucide-react';
-import { predictCascade, submitImage, type CascadeResponse } from '@/lib/api';
+import { submitAndWait, type InferenceResult } from '@/lib/api';
 import Card from '@/components/Card';
 import GlassCard from '@/components/GlassCard';
 import AnomalyScoreBar from '@/components/AnomalyScoreBar';
-import HeatmapOverlay from '@/components/HeatmapOverlay';
 import Badge from '@/components/Badge';
 import SectionHeader from '@/components/SectionHeader';
 import ErrorBanner from '@/components/ErrorBanner';
-
-type InferenceMode = 'cascade' | 'standard';
-
-const MVTec_CATEGORIES = [
-  'bottle','cable','capsule','carpet','grid',
-  'hazelnut','leather','metal_nut','pill','screw',
-  'tile','toothbrush','transistor','wood','zipper',
-];
 
 interface RecentEntry {
   filename: string;
   anomaly_score: number;
   is_anomaly: boolean;
-  model_used: string;
+  product_class: string | null;
 }
 
 export default function SubmitPage() {
@@ -41,11 +33,9 @@ export default function SubmitPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [mode, setMode] = useState<InferenceMode>('cascade');
-  const [category, setCategory] = useState('bottle');
-
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [result, setResult] = useState<CascadeResponse | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [result, setResult] = useState<InferenceResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentEntry[]>([]);
 
@@ -58,6 +48,7 @@ export default function SubmitPage() {
     setPreviewUrl(URL.createObjectURL(file));
     setError(null);
     setResult(null);
+    setJobId(null);
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -71,6 +62,7 @@ export default function SubmitPage() {
     setSelectedFile(null);
     setPreviewUrl(null);
     setResult(null);
+    setJobId(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -82,41 +74,44 @@ export default function SubmitPage() {
     setIsSubmitting(true);
     setError(null);
     setResult(null);
+    setJobId(null);
 
     try {
-      if (mode === 'cascade') {
-        const data = await predictCascade(selectedFile, {
-          normal_threshold: 0.2,
-          anomaly_threshold: 0.8,
-          use_vlm_fallback: true,
-        });
-        setResult(data);
-        setRecent(prev => [{
-          filename: selectedFile.name,
-          anomaly_score: data.anomaly_score,
-          is_anomaly: data.is_anomaly,
-          model_used: data.model_used,
-        }, ...prev].slice(0, 5));
-      } else {
-        await submitImage({ image_id: selectedFile.name });
-        setError('Standard mode: image queued for processing. Check Results for output.');
-      }
+      const data = await submitAndWait(selectedFile, {
+        pollMs: 1000,
+        timeoutMs: 60_000,
+      });
+      setResult(data);
+      setJobId(data.job_id);
+      setRecent(prev => [{
+        filename: selectedFile.name,
+        anomaly_score: data.anomaly_score ?? 0,
+        is_anomaly: !!data.is_anomaly,
+        product_class: data.product_class ?? null,
+      }, ...prev].slice(0, 5));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Submission failed. Is the backend running?');
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Submission failed. Is the API running on :3001?'
+      );
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const heatmapB64: string | null = null;
+  const stage2 = result?.stage2_verdict;
+  const productLine = result?.product_class
+    ? `${result.product_class}${result.product_confidence != null ? ` · ${(result.product_confidence * 100).toFixed(0)}% conf` : ''}`
+    : null;
 
   return (
     <div>
-      {/* Page header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-primary">Submit for Analysis</h1>
         <p className="text-sm text-text-tertiary mt-1">
-          Upload images for anomaly detection
+          Upload an image — the worker identifies the product, runs PatchCore,
+          and describes any defect via GPT-4o.
         </p>
       </div>
 
@@ -125,60 +120,6 @@ export default function SubmitPage() {
 
           {/* Left: form */}
           <div className="col-span-3 space-y-4">
-
-            {/* Mode selector */}
-            <Card padding="md">
-              <p className="text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                Detection Mode
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                {([
-                  { id: 'cascade' as const, label: 'Cascade', desc: 'Stage 1 → Stage 2 automatically', recommended: true },
-                  { id: 'standard' as const, label: 'Standard', desc: 'Submit to queue only', recommended: false },
-                ] as const).map(({ id, label, desc, recommended }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setMode(id)}
-                    className={[
-                      'p-3 rounded-xl border-2 text-left transition-all duration-150',
-                      mode === id
-                        ? 'border-kul-accent bg-kul-blue/10'
-                        : 'border-surface-border hover:border-surface-borderhover',
-                    ].join(' ')}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-medium text-text-primary">{label}</span>
-                      {recommended && (
-                        <Badge color="kul" className="text-[10px] px-1.5 py-0">
-                          Recommended
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-xs text-text-tertiary">{desc}</p>
-                  </button>
-                ))}
-              </div>
-
-              {mode === 'standard' && (
-                <div className="mt-3">
-                  <label className="block text-xs text-text-tertiary mb-1.5">
-                    Product Category
-                  </label>
-                  <select
-                    value={category}
-                    onChange={e => setCategory(e.target.value)}
-                    className="w-full bg-surface-overlay border border-surface-border rounded-lg px-3 py-2 text-sm text-text-primary focus:border-kul-accent transition-colors"
-                  >
-                    {MVTec_CATEGORIES.map(c => (
-                      <option key={c} value={c} className="bg-surface-raised">{c}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </Card>
-
-            {/* Drop zone */}
             <GlassCard padding="none">
               {!selectedFile ? (
                 <div
@@ -195,26 +136,18 @@ export default function SubmitPage() {
                   ].join(' ')}
                 >
                   <Upload className="w-10 h-10 text-text-disabled mb-3" />
-                  <p className="text-sm text-text-secondary">Drop images here</p>
+                  <p className="text-sm text-text-secondary">Drop image here</p>
                   <p className="text-xs text-text-disabled mt-1">or click to browse</p>
                   <p className="text-xs text-text-disabled mt-3">PNG · JPG · JPEG</p>
                 </div>
               ) : (
                 <div className="relative">
-                  {result?.bgad_score !== undefined ? (
-                    <HeatmapOverlay
-                      imageSrc={previewUrl!}
-                      heatmapBase64={heatmapB64}
-                      className="max-h-72"
-                    />
-                  ) : (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img
-                      src={previewUrl!}
-                      alt="Preview"
-                      className="w-full max-h-72 object-contain rounded-t-2xl"
-                    />
-                  )}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={previewUrl!}
+                    alt="Preview"
+                    className="w-full max-h-72 object-contain rounded-t-2xl"
+                  />
                   <button
                     type="button"
                     onClick={clearSelection}
@@ -242,7 +175,14 @@ export default function SubmitPage() {
 
             {error && <ErrorBanner message={error} onRetry={() => setError(null)} />}
 
-            {/* Submit button */}
+            {isSubmitting && jobId && (
+              <Card padding="sm" className="border-l-2 border-l-kul-accent">
+                <p className="text-xs font-mono text-text-secondary">
+                  job_id={jobId} · polling /api/result/{jobId} …
+                </p>
+              </Card>
+            )}
+
             <button
               type="submit"
               disabled={isSubmitting || !selectedFile}
@@ -251,12 +191,12 @@ export default function SubmitPage() {
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Analyzing...
+                  Analyzing…
                 </>
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  {mode === 'cascade' ? 'Run Cascade Analysis' : 'Queue for Processing'}
+                  Run Analysis
                 </>
               )}
             </button>
@@ -275,7 +215,7 @@ export default function SubmitPage() {
                 {/* Verdict card */}
                 <Card
                   padding="md"
-                  alert={result.is_anomaly}
+                  alert={!!result.is_anomaly}
                   className={result.is_anomaly ? '' : 'border-state-pass/20'}
                 >
                   <div className="flex items-center justify-between mb-4">
@@ -285,20 +225,28 @@ export default function SubmitPage() {
                     ].join(' ')}>
                       {result.is_anomaly ? 'Anomaly Detected' : 'Normal'}
                     </p>
-                    <Badge color={result.is_anomaly ? 'alert' : 'pass'}>
-                      {(result.confidence * 100).toFixed(0)}% conf.
-                    </Badge>
+                    {result.confidence != null && (
+                      <Badge color={result.is_anomaly ? 'alert' : 'pass'}>
+                        {(result.confidence * 100).toFixed(0)}% conf.
+                      </Badge>
+                    )}
                   </div>
 
+                  {productLine && (
+                    <p className="text-xs text-text-tertiary mb-3">
+                      Product: <span className="text-text-primary font-medium">{productLine}</span>
+                    </p>
+                  )}
+
                   <p className="text-xs text-text-tertiary mb-2">Anomaly Score</p>
-                  <AnomalyScoreBar score={result.anomaly_score} size="lg" showValue />
+                  <AnomalyScoreBar score={result.anomaly_score ?? 0} size="lg" showValue />
 
                   <div className="grid grid-cols-2 gap-3 mt-4">
                     {([
-                      ['Model', result.model_used],
-                      ['Route', result.routing_case?.replace(/_/g, ' ') ?? '—'],
+                      ['Model', result.model_used ?? '—'],
+                      ['Route', result.routing_reason?.replace(/_/g, ' ') ?? '—'],
                       ['Time', result.processing_time_ms ? `${result.processing_time_ms}ms` : '—'],
-                      ['Score', result.anomaly_score.toFixed(4)],
+                      ['Heatmap', result.stage1_output?.heatmap_available ? 'available' : '—'],
                     ] as [string, string][]).map(([label, val]) => (
                       <div key={label}>
                         <p className="text-xs text-text-tertiary">{label}</p>
@@ -308,28 +256,80 @@ export default function SubmitPage() {
                   </div>
                 </Card>
 
-                {/* GPT-4V analysis */}
-                {result.vlm_result && (
+                {/* GPT-4o description */}
+                {result.natural_description && (
                   <Card padding="md" className="border-l-2 border-l-purple-500">
                     <div className="flex items-center gap-1.5 mb-3">
                       <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                       <span className="text-xs font-medium text-purple-400">
                         GPT-4o Vision Analysis
                       </span>
+                      {result.vlm_model_used && (
+                        <Badge color="default" className="text-[10px] ml-auto">
+                          {result.vlm_model_used}
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-sm text-text-primary leading-relaxed">
-                      {result.vlm_result.classification}
+                      {result.natural_description}
                     </p>
-                    {result.vlm_result.confidence !== undefined && (
-                      <p className="text-xs text-text-tertiary mt-2">
-                        Confidence: {(result.vlm_result.confidence * 100).toFixed(0)}%
+                    {(result.defect_type || result.defect_location || result.defect_severity) && (
+                      <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-surface-border">
+                        {([
+                          ['Type', result.defect_type],
+                          ['Location', result.defect_location],
+                          ['Severity', result.defect_severity],
+                        ] as [string, string | null | undefined][]).map(([label, val]) => (
+                          <div key={label}>
+                            <p className="text-[10px] text-text-tertiary uppercase">{label}</p>
+                            <p className="text-xs text-text-primary">{val || '—'}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                )}
+
+                {/* Stage 2 verdict card */}
+                {stage2 && (
+                  <Card padding="md" className="border-l-2 border-l-kul-accent">
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <Layers className="w-3.5 h-3.5 text-kul-accent" />
+                      <span className="text-xs font-medium text-kul-accent">
+                        Stage 2 — Supervised Refiner
+                      </span>
+                      {result.stage2_confidence != null && (
+                        <Badge color="default" className="text-[10px] ml-auto">
+                          {(result.stage2_confidence * 100).toFixed(0)}% conf
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-sm text-text-primary">
+                      Verdict: <span className="font-medium">{stage2.replace(/_/g, ' ')}</span>
+                    </p>
+                    {result.stage2_defect_class && (
+                      <p className="text-xs text-text-tertiary mt-1">
+                        Defect class: <span className="text-text-primary">{result.stage2_defect_class}</span>
                       </p>
                     )}
                   </Card>
                 )}
 
-                {/* Expert queue CTA */}
-                {result.requires_expert_labeling && (
+                {/* Footer: cost + job id */}
+                <Card padding="sm">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-text-tertiary truncate">job_id={result.job_id}</span>
+                    {result.vlm_api_cost_estimate_usd != null && (
+                      <span className="text-text-secondary">
+                        VLM ${result.vlm_api_cost_estimate_usd.toFixed(5)}
+                      </span>
+                    )}
+                  </div>
+                </Card>
+
+                {/* Expert queue CTA when ambiguous */}
+                {(result.routing_reason === 'stage2_uncertain_kept' ||
+                  result.routing_reason === 'unknown_product_zero_shot') && (
                   <Card padding="sm" className="border-l-2 border-l-kul-accent">
                     <div className="flex items-start gap-3">
                       <Tag className="w-4 h-4 text-kul-accent flex-shrink-0 mt-0.5" />
@@ -338,7 +338,7 @@ export default function SubmitPage() {
                           Queued for Expert Review
                         </p>
                         <p className="text-xs text-text-tertiary mt-0.5">
-                          This image requires labeling to improve Stage 2
+                          This image benefits from a human label.
                         </p>
                         <Link
                           href="/label"
@@ -353,7 +353,6 @@ export default function SubmitPage() {
               </>
             )}
 
-            {/* Recent submissions */}
             {recent.length > 0 && (
               <Card padding="sm">
                 <SectionHeader

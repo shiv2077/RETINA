@@ -98,7 +98,7 @@ export interface ActiveLearningMeta {
   labeled: boolean;
 }
 
-/** Inference result */
+/** Inference result — matches shared/schemas/result.json */
 export interface InferenceResult {
   job_id: string;
   image_id: string;
@@ -115,12 +115,35 @@ export interface InferenceResult {
   active_learning: ActiveLearningMeta;
   error?: { code: string; message: string };
   processing_time_ms?: number;
-  /** Human-readable defect description from GPT-4o (null for non-VLM results) */
+  /** Legacy GPT-4V description, kept for backward compatibility */
   defect_description?: string | null;
-  /** Spatial description of defect location from GPT-4o */
   defect_location?: string | null;
-  /** One-sentence GPT-4o reasoning for the prediction */
   gpt4v_reasoning?: string | null;
+  /** VLM router outputs (added in the Stage 1/2 integration) */
+  product_class?: string | null;
+  product_confidence?: number | null;
+  natural_description?: string | null;
+  defect_severity?: 'minor' | 'moderate' | 'severe' | null;
+  defect_type?: string | null;
+  routing_reason?:
+    | 'patchcore_normal'
+    | 'patchcore_confirmed_anomaly'
+    | 'stage2_confirmed'
+    | 'stage2_rejected'
+    | 'stage2_uncertain_kept'
+    | 'unknown_product_zero_shot'
+    | string
+    | null;
+  vlm_model_used?: 'gpt-4o' | 'gpt-4o-mini' | string | null;
+  vlm_api_cost_estimate_usd?: number | null;
+  /** Stage 2 supervised refiner outputs */
+  stage2_verdict?:
+    | 'confirmed_anomaly'
+    | 'rejected_false_positive'
+    | 'uncertain'
+    | null;
+  stage2_defect_class?: string | null;
+  stage2_confidence?: number | null;
 }
 
 /** Result query response */
@@ -332,27 +355,67 @@ export async function getSystemStatus(): Promise<SystemStatusResponse> {
 }
 
 /**
- * Submit an image for anomaly detection.
- * Backend route: POST /api/images/submit
+ * Submit an image file for anomaly detection via the FastAPI wrapper.
+ * Backend route: POST /api/submit   (multipart/form-data)
+ *
+ * The backend returns only { job_id }. Callers should poll getResult(job_id).
  */
-export async function submitImage(
-  request: SubmitImageRequest
-): Promise<SubmitImageResponse> {
-  return apiFetch<SubmitImageResponse>('/api/images/submit', {
+export async function submitImage(file: File): Promise<{ job_id: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch(`${API_BASE_URL}/api/submit`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: form,
   });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Submit failed: ${response.statusText}`,
+      response.status,
+    );
+  }
+  return response.json();
 }
 
 /**
- * Get the inference result for a job or image.
- * Backend route: GET /api/images/{id}/result
- *
- * @param id - Either a job_id (UUID) or image_id
+ * Get the InferenceResult for a job_id. Returns null if not ready yet (404).
+ * Backend route: GET /api/result/{job_id}
  */
-export async function getResult(id: string): Promise<ResultResponse> {
-  return apiFetch<ResultResponse>(`/api/images/${encodeURIComponent(id)}/result`);
+export async function getResult(job_id: string): Promise<InferenceResult | null> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/result/${encodeURIComponent(job_id)}?wait=0`,
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Result fetch failed: ${response.statusText}`,
+      response.status,
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Submit + poll until a result comes back. Resolves to the InferenceResult or
+ * throws ApiError on timeout. Convenience wrapper for the submit page.
+ */
+export async function submitAndWait(
+  file: File,
+  opts: { pollMs?: number; timeoutMs?: number } = {},
+): Promise<InferenceResult> {
+  const { pollMs = 1000, timeoutMs = 60_000 } = opts;
+  const { job_id } = await submitImage(file);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await getResult(job_id);
+    if (result) return result;
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  throw new ApiError(
+    `Inference timed out after ${timeoutMs}ms (job_id=${job_id})`,
+    504,
+  );
 }
 
 /**
@@ -375,6 +438,66 @@ export async function submitLabel(
  */
 export async function getLabelingPool(): Promise<LabelingPoolResponse> {
   return apiFetch<LabelingPoolResponse>('/api/labels/pool');
+}
+
+/** Active learning pool item returned by the FastAPI wrapper. */
+export interface PoolItem {
+  image_id: string;
+  score: number;
+  image_url: string;
+  anomaly_score?: number | null;
+  uncertainty_score?: number | null;
+}
+
+/**
+ * FastAPI labels pool (used by the annotation studio).
+ * Matches api/main.py /api/labels/pool response.
+ */
+export async function getLabelPoolV2(limit = 20): Promise<{ pool: PoolItem[]; count: number }> {
+  const response = await fetch(`${API_BASE_URL}/api/labels/pool?limit=${limit}`);
+  if (!response.ok) {
+    throw new ApiError(`labels pool fetch failed: ${response.statusText}`, response.status);
+  }
+  return response.json();
+}
+
+/** Label submission payload accepted by POST /api/labels/submit (FastAPI). */
+export interface LabelSubmissionV2 {
+  image_id: string;
+  product_class: string;
+  label: 'anomaly' | 'normal';
+  defect_class?: string | null;
+  polygons?: Array<{ vertices: Array<{ x: number; y: number }>; class: string | null }> | null;
+  boxes?: Array<{
+    x: number; y: number; width: number; height: number;
+    defect_type: string; confidence?: number;
+  }> | null;
+  operator_id?: string | null;
+  notes?: string | null;
+}
+
+/** Simple alias: flat array of pool items (matches user-facing contract). */
+export async function getLabelPool(limit = 50): Promise<PoolItem[]> {
+  const res = await getLabelPoolV2(limit);
+  return res.pool;
+}
+
+export async function submitLabelV2(
+  body: LabelSubmissionV2,
+): Promise<{ ok: boolean; labels_count: number }> {
+  const response = await fetch(`${API_BASE_URL}/api/labels/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new ApiError(
+      err.detail || `label submit failed: ${response.statusText}`,
+      response.status,
+    );
+  }
+  return response.json();
 }
 
 // =============================================================================

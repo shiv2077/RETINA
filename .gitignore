@@ -59,6 +59,7 @@ docker-compose.override.yml
 # -----------------------------------------------------------------------------
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 .DS_Store

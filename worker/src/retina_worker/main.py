@@ -30,6 +30,8 @@ The worker is configured via environment variables:
 See config.py for all configuration options.
 """
 
+import logging
+
 import structlog
 
 from .config import get_settings
@@ -39,12 +41,16 @@ from .worker import Worker
 def configure_logging(debug: bool = False) -> None:
     """
     Configure structured logging.
-    
+
     Parameters
     ----------
     debug : bool
         Enable debug-level logging
     """
+    logging.basicConfig(
+        format="%(message)s",
+        level=logging.DEBUG if debug else logging.INFO,
+    )
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -59,7 +65,7 @@ def configure_logging(debug: bool = False) -> None:
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

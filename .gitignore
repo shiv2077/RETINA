@@ -36,8 +36,10 @@ build/
 worker/models/weights/
 *.pt
 *.pth
+*.ckpt
 *.onnx
 *.safetensors
+checkpoints/
 
 # -----------------------------------------------------------------------------
 # Node.js / Frontend

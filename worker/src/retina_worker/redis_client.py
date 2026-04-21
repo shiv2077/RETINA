@@ -72,7 +72,7 @@ class RedisClient:
     def __init__(self, settings: Settings):
         """
         Initialize Redis client.
-        
+
         Parameters
         ----------
         settings : Settings
@@ -84,6 +84,35 @@ class RedisClient:
         )
         self.consumer_name = settings.consumer_name
         self.settings = settings
+        self._ensure_consumer_group()
+
+    def _ensure_consumer_group(self) -> None:
+        """Create the worker consumer group if it does not yet exist.
+
+        Idempotent: on BUSYGROUP (group already exists) we log debug and move
+        on. Any other ResponseError propagates.
+        """
+        try:
+            self.client.xgroup_create(
+                name=JOB_QUEUE_STREAM,
+                groupname=WORKER_GROUP,
+                id="0",
+                mkstream=True,
+            )
+            logger.info(
+                "consumer_group_created",
+                stream=JOB_QUEUE_STREAM,
+                group=WORKER_GROUP,
+            )
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" in str(e):
+                logger.debug(
+                    "consumer_group_exists",
+                    stream=JOB_QUEUE_STREAM,
+                    group=WORKER_GROUP,
+                )
+            else:
+                raise
     
     def health_check(self) -> bool:
         """

@@ -38,18 +38,6 @@ pub struct Stage1Output {
     /// CLIP text-image similarity score (WinCLIP only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clip_similarity: Option<f64>,
-
-    /// Human-readable defect description from GPT-4o (null if normal or non-VLM model)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub defect_description: Option<String>,
-
-    /// Spatial description of defect location from GPT-4o (e.g. "top-left corner")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub defect_location: Option<String>,
-
-    /// One-sentence reasoning from GPT-4o explaining the prediction
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gpt4v_reasoning: Option<String>,
 }
 
 /// Stage 2 (supervised) specific output fields.
@@ -159,6 +147,53 @@ pub struct InferenceResult {
     /// Processing time in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processing_time_ms: Option<u64>,
+
+    // ── VLM / router outputs (top-level) ──────────────────────────────────
+    /// Human-readable defect description produced by the VLM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defect_description: Option<String>,
+
+    /// Spatial description of the defect location from the VLM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defect_location: Option<String>,
+
+    /// Legacy one-sentence reasoning from the GPT-4V detector.
+    /// Kept for backward compat; new code should use `natural_description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpt4v_reasoning: Option<String>,
+
+    /// Routed product category (one of the trained PatchCore categories
+    /// or "unknown" for zero-shot fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_class: Option<String>,
+
+    /// Confidence of the VLM product identification (0.0-1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_confidence: Option<f64>,
+
+    /// Operator-facing single-sentence defect description from the VLM router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub natural_description: Option<String>,
+
+    /// Severity bucket assigned by the VLM ("minor" | "moderate" | "severe").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defect_severity: Option<String>,
+
+    /// Defect-type label from the VLM (e.g. "scratch", "crack").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defect_type: Option<String>,
+
+    /// Which branch of the router fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_reason: Option<String>,
+
+    /// Which OpenAI model was invoked for this result, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlm_model_used: Option<String>,
+
+    /// Rough USD cost estimate for the VLM calls that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlm_api_cost_estimate_usd: Option<f64>,
 }
 
 impl InferenceResult {
@@ -180,6 +215,17 @@ impl InferenceResult {
             active_learning: ActiveLearningMeta::default(),
             error: None,
             processing_time_ms: None,
+            defect_description: None,
+            defect_location: None,
+            gpt4v_reasoning: None,
+            product_class: None,
+            product_confidence: None,
+            natural_description: None,
+            defect_severity: None,
+            defect_type: None,
+            routing_reason: None,
+            vlm_model_used: None,
+            vlm_api_cost_estimate_usd: None,
         }
     }
 }

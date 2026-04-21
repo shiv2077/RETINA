@@ -135,11 +135,27 @@ class InferenceResult(BaseModel):
     # Performance metrics
     processing_time_ms: Optional[int] = None
 
-    # GPT-4V / VLM outputs — populated when model_used == "gpt4v"
-    # These are surfaced to operators on the Expert Review page.
+    # ── VLM / router outputs (top-level) ───────────────────────────────────
+    # Legacy GPT-4V fields (now populated by the VLM router as well; kept
+    # for backward compatibility with existing records).
     defect_description: Optional[str] = None
     defect_location: Optional[str] = None
     gpt4v_reasoning: Optional[str] = None
+
+    # New VLM-router fields — see docs/vlm_router_design.md for usage.
+    product_class: Optional[str] = None
+    product_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    natural_description: Optional[str] = None
+    defect_severity: Optional[str] = None   # "minor" | "moderate" | "severe"
+    defect_type: Optional[str] = None
+    routing_reason: Optional[str] = None    # see routing_reason enum in result.json
+    vlm_model_used: Optional[str] = None    # "gpt-4o" | "gpt-4o-mini"
+    vlm_api_cost_estimate_usd: Optional[float] = Field(None, ge=0.0)
+
+    # Stage 2 supervised refiner — populated only when stage1 score is in [0.5, 0.9).
+    stage2_verdict: Optional[str] = None            # confirmed_anomaly | rejected_false_positive | uncertain
+    stage2_defect_class: Optional[str] = None
+    stage2_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class UnlabeledSample(BaseModel):

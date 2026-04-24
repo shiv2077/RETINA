@@ -447,6 +447,7 @@ export interface PoolItem {
   image_url: string;
   anomaly_score?: number | null;
   uncertainty_score?: number | null;
+  product_class?: string | null;
 }
 
 /**
@@ -480,6 +481,40 @@ export interface LabelSubmissionV2 {
 export async function getLabelPool(limit = 50): Promise<PoolItem[]> {
   const res = await getLabelPoolV2(limit);
   return res.pool;
+}
+
+export interface CustomTaxonomyEntry {
+  key: string;
+  name: string;
+  color: string;
+  shortcut: string;
+  custom?: boolean;
+}
+
+/** Fetch operator-added categories for a product. */
+export async function fetchCustomTaxonomy(product_class: string): Promise<CustomTaxonomyEntry[]> {
+  const r = await fetch(`${API_BASE_URL}/api/taxonomy/${encodeURIComponent(product_class)}`);
+  if (!r.ok) throw new ApiError(`taxonomy fetch failed: ${r.statusText}`, r.status);
+  const data = await r.json();
+  return data.custom ?? [];
+}
+
+/** Append a custom category for a product. Returns the full updated list. */
+export async function addCustomTaxonomyEntry(
+  product_class: string,
+  entry: CustomTaxonomyEntry,
+): Promise<CustomTaxonomyEntry[]> {
+  const r = await fetch(`${API_BASE_URL}/api/taxonomy/${encodeURIComponent(product_class)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new ApiError(err.detail || `taxonomy post failed: ${r.statusText}`, r.status);
+  }
+  const data = await r.json();
+  return data.custom ?? [];
 }
 
 export async function submitLabelV2(

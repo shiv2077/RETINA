@@ -21,10 +21,13 @@ from pathlib import Path
 from typing import Optional
 
 import redis
+import structlog
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+logger = structlog.get_logger()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "worker" / "src"))
@@ -44,9 +47,11 @@ JOB_QUEUE_STREAM = "retina:jobs:queue"
 RESULT_KEY = "retina:results:{job_id}"
 AL_POOL_KEY = "retina:al:pool"
 AL_SAMPLE_KEY = "retina:al:samples:{image_id}"
+IMAGE_META_KEY = "retina:images:{image_id}"  # hash: image_path, latest_job_id
 LABEL_KEY = "retina:labels:{image_id}"
 LABEL_COUNT_FIELD = "labels_collected"
 STATS_KEY = "retina:system:stats"
+TAXONOMY_KEY = "retina:taxonomy:{product_class}"
 
 app = FastAPI(title="RETINA API", version="0.1.0")
 app.add_middleware(
@@ -80,6 +85,12 @@ async def submit(file: UploadFile = File(...)) -> dict:
         submitted_at=datetime.utcnow(),
         image_path=str(dest.resolve()),
     )
+    # Record reverse image_id → image_path mapping so /api/images/ can
+    # serve the file even after the worker processes the job.
+    redis_client.hset(
+        IMAGE_META_KEY.format(image_id=job_id),
+        mapping={"image_path": str(dest.resolve())},
+    )
     redis_client.xadd(JOB_QUEUE_STREAM, {"job_data": job.model_dump_json()})
     return {"job_id": job_id}
 
@@ -110,18 +121,34 @@ async def labels_pool(limit: int = 20) -> dict:
     pool = []
     for image_id, score in items:
         sample_json = redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
-        meta = {}
+        meta: dict = {}
         if sample_json:
             try:
                 meta = json.loads(sample_json)
             except json.JSONDecodeError:
                 pass
+
+        # Enrich with product_class by chasing retina:images → retina:results.
+        product_class: Optional[str] = None
+        image_hash = redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
+        latest_job_id = image_hash.get("latest_job_id") if image_hash else None
+        if latest_job_id:
+            result_json = redis_client.hget(
+                RESULT_KEY.format(job_id=latest_job_id), "result_data",
+            )
+            if result_json:
+                try:
+                    product_class = json.loads(result_json).get("product_class")
+                except json.JSONDecodeError:
+                    pass
+
         pool.append({
             "image_id": image_id,
             "score": float(score),
             "image_url": f"/api/images/{image_id}",
             "anomaly_score": meta.get("anomaly_score"),
             "uncertainty_score": meta.get("uncertainty_score"),
+            "product_class": product_class,
         })
     return {"pool": pool, "count": len(pool)}
 
@@ -161,12 +188,135 @@ async def labels_submit(body: LabelSubmission) -> dict:
 
 
 # ── GET /api/images/{image_id} ───────────────────────────────────────────
+def _serve_if_exists(path_str: str, source: str, image_id: str):
+    """Return a FileResponse if the path exists on disk, else None.
+
+    Logs which lookup path succeeded so we can trace 404s in production.
+    """
+    if not path_str:
+        return None
+    cand = Path(path_str)
+    if not cand.is_file():
+        return None
+    mime = "image/png" if cand.suffix.lower() == ".png" else "image/jpeg"
+    logger.info("image_served", image_id=image_id, source=source, path=str(cand))
+    return FileResponse(cand, media_type=mime)
+
+
 @app.get("/api/images/{image_id}")
 async def get_image(image_id: str):
-    path = UPLOAD_DIR / f"{image_id}.png"
-    if not path.is_file():
-        raise HTTPException(404, f"no image for {image_id}")
-    return FileResponse(path, media_type="image/png")
+    # 1. uploads directory (FastAPI /api/submit multipart path)
+    upload_path = UPLOAD_DIR / f"{image_id}.png"
+    if upload_path.is_file():
+        return FileResponse(upload_path, media_type="image/png")
+
+    # 2. AL sample metadata — retina:al:samples:{id}
+    sample_json = redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
+    if sample_json:
+        try:
+            sample = json.loads(sample_json)
+            r = _serve_if_exists(sample.get("image_path", ""), "al_sample", image_id)
+            if r:
+                return r
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Result hash — retina:results:{image_id} (if an InferenceResult
+    #    ever carries image_path, pick it up here)
+    result_json = redis_client.hget(RESULT_KEY.format(job_id=image_id), "result_data")
+    if result_json:
+        try:
+            result = json.loads(result_json)
+            r = _serve_if_exists(result.get("image_path", ""), "result", image_id)
+            if r:
+                return r
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Reverse mapping — retina:images:{image_id}
+    meta = redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
+    if meta:
+        r = _serve_if_exists(meta.get("image_path", ""), "image_meta", image_id)
+        if r:
+            return r
+
+    # 5. Stream scan — last resort. Walk retina:jobs:queue looking for a job
+    #    whose image_id matches, then try its image_path.
+    try:
+        entries = redis_client.xrange(JOB_QUEUE_STREAM, "-", "+", count=1000)
+        for _entry_id, fields in entries:
+            try:
+                job = json.loads(fields.get("job_data", "{}"))
+            except json.JSONDecodeError:
+                continue
+            if job.get("image_id") == image_id:
+                r = _serve_if_exists(job.get("image_path", ""), "stream_scan", image_id)
+                if r:
+                    return r
+                break
+    except redis.RedisError:
+        pass
+
+    logger.warning("image_not_found", image_id=image_id)
+    raise HTTPException(
+        404, f"image {image_id} not found in uploads, al_samples, results, "
+             "image_meta, or job stream",
+    )
+
+
+# ── /api/taxonomy/{product_class} ───────────────────────────────────────
+# Base taxonomy lives in the frontend (lib/taxonomies.ts). This endpoint
+# only stores operator-added custom categories so they persist across
+# restarts.
+
+class TaxonomyEntry(BaseModel):
+    key: str
+    name: str
+    color: str
+    shortcut: str
+
+
+@app.get("/api/taxonomy/{product_class}")
+async def get_taxonomy(product_class: str) -> dict:
+    raw = redis_client.get(TAXONOMY_KEY.format(product_class=product_class))
+    if not raw:
+        return {"product_class": product_class, "custom": []}
+    try:
+        custom = json.loads(raw)
+    except json.JSONDecodeError:
+        custom = []
+    return {"product_class": product_class, "custom": custom}
+
+
+@app.post("/api/taxonomy/{product_class}")
+async def add_taxonomy_entry(product_class: str, entry: TaxonomyEntry) -> dict:
+    # Validate against existing custom entries. (Base-taxonomy uniqueness is
+    # enforced client-side since the base set lives in the frontend.)
+    key = TAXONOMY_KEY.format(product_class=product_class)
+    raw = redis_client.get(key)
+    existing: list[dict] = []
+    if raw:
+        try:
+            existing = json.loads(raw)
+        except json.JSONDecodeError:
+            existing = []
+
+    key_lower = entry.key.lower()
+    if any(e.get("key", "").lower() == key_lower for e in existing):
+        raise HTTPException(409, f"custom category '{entry.key}' already exists")
+
+    if not entry.key or len(entry.key) < 2 or len(entry.key) > 30:
+        raise HTTPException(400, "key must be 2–30 characters")
+
+    import re
+    if not re.match(r"^[a-z0-9_]+$", entry.key):
+        raise HTTPException(400, "key must be snake_case (a–z, 0–9, _)")
+
+    new_entry = entry.model_dump()
+    new_entry["custom"] = True
+    existing.append(new_entry)
+    redis_client.set(key, json.dumps(existing))
+    return {"product_class": product_class, "custom": existing}
 
 
 @app.get("/health")

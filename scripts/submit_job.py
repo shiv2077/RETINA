@@ -81,6 +81,12 @@ def main() -> None:
             "        Start it with: redis-server --port 6379"
         ) from None
 
+    # Reverse lookup for /api/images/{image_id} — so the browser can load
+    # the source image later regardless of where it lives on disk.
+    client.hset(
+        f"retina:images:{job.image_id}",
+        mapping={"image_path": str(image_abs)},
+    )
     payload = job.model_dump_json()
     entry_id = client.xadd(JOB_QUEUE_STREAM, {"job_data": payload})
 

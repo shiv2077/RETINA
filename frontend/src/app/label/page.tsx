@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import * as api from '@/lib/api';
 import {
@@ -22,18 +22,18 @@ import {
   Sparkles,
   SkipForward,
   Spline,
+  Plus,
+  X as XIcon,
 } from 'lucide-react';
-
-// Decospan Dutch canonical names per CLAUDE.md §6.2
-const DEFECT_CATEGORIES = [
-  { name: 'krassen',   englishLabel: 'Scratches',     color: '#EF4444', shortcut: '1' },
-  { name: 'deuk',      englishLabel: 'Dent',           color: '#F97316', shortcut: '2' },
-  { name: 'vlekken',   englishLabel: 'Stains',         color: '#EAB308', shortcut: '3' },
-  { name: 'barst',     englishLabel: 'Crack',          color: '#22C55E', shortcut: '4' },
-  { name: 'open fout', englishLabel: 'Open Defect',    color: '#3B82F6', shortcut: '5' },
-  { name: 'open knop', englishLabel: 'Open Knot',      color: '#8B5CF6', shortcut: '6' },
-  { name: 'snijfout',  englishLabel: 'Cutting Error',  color: '#6B7280', shortcut: '7' },
-];
+import {
+  getBaseTaxonomy,
+  mergeTaxonomy,
+  nextColor,
+  nextShortcut,
+  toSnakeCase,
+  validateCategoryKey,
+  type TaxonomyEntry,
+} from '@/lib/taxonomies';
 
 interface BoundingBox {
   id: string;
@@ -63,6 +63,7 @@ interface Sample extends api.CascadeQueueItem {
   routing_case: api.CascadeRoutingCase;
   created_at: string;
   metadata?: Record<string, unknown>;
+  product_class?: string | null;
 }
 
 interface Annotation {
@@ -82,7 +83,13 @@ export default function LabelPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
-  const [selectedDefect, setSelectedDefect] = useState<string>(DEFECT_CATEGORIES[0].name);
+  const [selectedDefect, setSelectedDefect] = useState<string>('');
+  const [customTaxonomy, setCustomTaxonomy] = useState<TaxonomyEntry[]>([]);
+  const [showNewCategoryForm, setShowNewCategoryForm] = useState(false);
+  const [newCategoryRaw, setNewCategoryRaw] = useState('');
+  const [newCategoryDisplay, setNewCategoryDisplay] = useState('');
+  const [newCategoryError, setNewCategoryError] = useState<string | null>(null);
+  const [submittingNewCategory, setSubmittingNewCategory] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [currentBox, setCurrentBox] = useState<Partial<BoundingBox> | null>(null);
@@ -105,6 +112,30 @@ export default function LabelPage() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const currentSample = samples[currentIndex];
+  const currentProduct = currentSample?.product_class ?? 'decospan';
+  const baseTaxonomy = useMemo(() => getBaseTaxonomy(currentProduct), [currentProduct]);
+  const activeTaxonomy = useMemo(
+    () => mergeTaxonomy(baseTaxonomy, customTaxonomy),
+    [baseTaxonomy, customTaxonomy],
+  );
+
+  // Keep selectedDefect in sync with the active taxonomy (first entry fallback).
+  useEffect(() => {
+    if (!activeTaxonomy.length) return;
+    if (!activeTaxonomy.some(e => e.key === selectedDefect)) {
+      setSelectedDefect(activeTaxonomy[0].key);
+    }
+  }, [activeTaxonomy, selectedDefect]);
+
+  // Fetch operator-added categories whenever the product changes.
+  useEffect(() => {
+    if (!currentProduct) return;
+    let cancelled = false;
+    api.fetchCustomTaxonomy(currentProduct)
+      .then(list => { if (!cancelled) setCustomTaxonomy(list); })
+      .catch(() => { if (!cancelled) setCustomTaxonomy([]); });
+    return () => { cancelled = true; };
+  }, [currentProduct]);
 
   const loadPool = useCallback(async () => {
     setLoading(true);
@@ -120,6 +151,7 @@ export default function LabelPage() {
         routing_case: 'C_uncertain_vlm_routed',
         status: 'pending',
         created_at: new Date().toISOString(),
+        product_class: p.product_class ?? null,
       } as Sample));
       setSamples(asSamples);
       setCurrentIndex(0);
@@ -174,7 +206,7 @@ export default function LabelPage() {
     }
 
     boundingBoxes.forEach((box) => {
-      const category = DEFECT_CATEGORIES.find(c => c.name === box.defect_type);
+      const category = activeTaxonomy.find(c => c.key === box.defect_type);
       const color = category?.color ?? '#ffffff';
 
       ctx.strokeStyle = color;
@@ -189,7 +221,7 @@ export default function LabelPage() {
     });
 
     if (currentBox && drawStart) {
-      const category = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+      const category = activeTaxonomy.find(c => c.key === selectedDefect);
       ctx.strokeStyle = category?.color ?? '#ffffff';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
@@ -230,7 +262,7 @@ export default function LabelPage() {
 
     // ── In-progress polygon ─────────────────────────────────────────────
     if (currentPolygon && currentPolygon.vertices.length > 0) {
-      const cat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+      const cat = activeTaxonomy.find(c => c.key === selectedDefect);
       const color = cat?.color ?? '#ffffff';
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
@@ -306,7 +338,7 @@ export default function LabelPage() {
 
   const closePolygon = useCallback(() => {
     if (!currentPolygon || currentPolygon.vertices.length < 3) return;
-    const cat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+    const cat = activeTaxonomy.find(c => c.key === selectedDefect);
     const id = typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : `poly_${Date.now()}`;
@@ -317,7 +349,7 @@ export default function LabelPage() {
       color: cat?.color ?? '#ffffff',
     }]);
     setCurrentPolygon(null);
-  }, [currentPolygon, selectedDefect]);
+  }, [currentPolygon, selectedDefect, activeTaxonomy]);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const coords = getCanvasCoords(e);
@@ -399,13 +431,13 @@ export default function LabelPage() {
 
   const submitAnnotation = useCallback(async (label: 'normal' | 'anomaly' | 'uncertain') => {
     if (!currentSample) return;
-    const selectedCat = DEFECT_CATEGORIES.find(c => c.name === selectedDefect);
+    const selectedCat = activeTaxonomy.find(c => c.key === selectedDefect);
     try {
       await api.submitLabelV2({
         image_id: currentSample.image_id,
-        product_class: currentSample.routing_case ? 'unknown' : 'unknown',  // product name unavailable here — API stores what frontend sends
+        product_class: currentProduct,
         label: label === 'uncertain' ? 'anomaly' : label,
-        defect_class: selectedCat?.name ?? null,
+        defect_class: selectedCat?.key ?? null,
         boxes: boundingBoxes.map(b => ({
           x: b.x, y: b.y, width: b.width, height: b.height,
           defect_type: b.defect_type, confidence: b.confidence,
@@ -482,8 +514,8 @@ export default function LabelPage() {
           if (currentIndex < samples.length - 1) { setCurrentIndex(c => c + 1); setBoundingBoxes([]); setPolygons([]); setCurrentPolygon(null); }
           break;
         default: {
-          const cat = DEFECT_CATEGORIES.find(c => c.shortcut === e.key);
-          if (cat) setSelectedDefect(cat.name);
+          const cat = activeTaxonomy.find(c => c.shortcut === e.key);
+          if (cat) setSelectedDefect(cat.key);
         }
       }
     };
@@ -641,36 +673,135 @@ export default function LabelPage() {
                 </div>
               </div>
 
-              {/* Decospan taxonomy */}
+              {/* Product-aware taxonomy */}
               <div className="flex-1 overflow-auto p-5">
-                <h3 className="text-[10px] uppercase tracking-widest text-text-tertiary font-bold mb-4">
-                  Decospan Taxonomy
+                <h3 className="text-[10px] uppercase tracking-widest text-text-tertiary font-bold mb-1">
+                  Taxonomy
                 </h3>
+                <p className="text-[10px] font-mono text-text-disabled mb-4">
+                  product: <span className="text-text-tertiary">{currentProduct}</span>
+                </p>
                 <div className="space-y-1.5">
-                  {DEFECT_CATEGORIES.map(cat => (
+                  {activeTaxonomy.map(cat => (
                     <button
-                      key={cat.name}
-                      onClick={() => setSelectedDefect(cat.name)}
+                      key={cat.key}
+                      onClick={() => setSelectedDefect(cat.key)}
                       className={[
                         'w-full px-3 py-2 rounded text-xs font-medium flex items-center transition-colors border-l-2',
-                        selectedDefect === cat.name
+                        selectedDefect === cat.key
                           ? 'bg-surface-overlay text-text-primary'
                           : 'bg-transparent text-text-tertiary hover:bg-surface-overlay/50',
+                        cat.custom ? 'border-dashed' : '',
                       ].join(' ')}
                       style={{ borderLeftColor: cat.color }}
                     >
                       <span className="flex-1 text-left">
-                        <span className="block uppercase tracking-wide">{cat.name}</span>
-                        <span className="text-[10px] text-text-disabled normal-case tracking-normal">
-                          {cat.englishLabel}
-                        </span>
+                        <span className="block uppercase tracking-wide">{cat.key}</span>
+                        {cat.name !== cat.key && (
+                          <span className="text-[10px] text-text-disabled normal-case tracking-normal">
+                            {cat.name}
+                          </span>
+                        )}
                       </span>
-                      <kbd className="text-[9px] font-mono text-text-disabled border border-surface-border rounded px-1.5 py-0.5">
-                        {cat.shortcut}
-                      </kbd>
+                      {cat.custom && (
+                        <span className="text-[8px] font-bold uppercase text-kul-accent bg-kul-accent/10 border border-kul-accent/30 rounded px-1 py-0.5 mr-1.5">
+                          new
+                        </span>
+                      )}
+                      {cat.shortcut && (
+                        <kbd className="text-[9px] font-mono text-text-disabled border border-surface-border rounded px-1.5 py-0.5">
+                          {cat.shortcut}
+                        </kbd>
+                      )}
                     </button>
                   ))}
                 </div>
+
+                {/* Inline new-category form */}
+                {showNewCategoryForm ? (
+                  <div className="mt-3 p-3 border border-surface-border rounded bg-[#0C0C0E]/60 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-widest text-text-tertiary font-bold">
+                        New Category
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowNewCategoryForm(false);
+                          setNewCategoryRaw('');
+                          setNewCategoryDisplay('');
+                          setNewCategoryError(null);
+                        }}
+                        className="text-text-disabled hover:text-text-primary"
+                      >
+                        <XIcon className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <input
+                      value={newCategoryRaw}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        const snake = toSnakeCase(raw);
+                        setNewCategoryRaw(snake);
+                        setNewCategoryError(validateCategoryKey(snake, activeTaxonomy));
+                      }}
+                      placeholder="defect_key (snake_case)"
+                      className="w-full bg-surface-raised border border-surface-border rounded px-2 py-1.5 text-xs font-mono text-text-primary focus:outline-none focus:border-kul-accent"
+                    />
+                    <input
+                      value={newCategoryDisplay}
+                      onChange={e => setNewCategoryDisplay(e.target.value)}
+                      placeholder="Display name (optional)"
+                      className="w-full bg-surface-raised border border-surface-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-kul-accent"
+                    />
+                    {newCategoryError && (
+                      <p className="text-[10px] text-state-alert font-mono">{newCategoryError}</p>
+                    )}
+                    <button
+                      type="button"
+                      disabled={
+                        submittingNewCategory
+                        || !!newCategoryError
+                        || newCategoryRaw.length < 2
+                      }
+                      onClick={async () => {
+                        const err = validateCategoryKey(newCategoryRaw, activeTaxonomy);
+                        if (err) { setNewCategoryError(err); return; }
+                        setSubmittingNewCategory(true);
+                        try {
+                          const newEntry = {
+                            key: newCategoryRaw,
+                            name: newCategoryDisplay || newCategoryRaw.replace(/_/g, ' '),
+                            color: nextColor(activeTaxonomy),
+                            shortcut: nextShortcut(activeTaxonomy),
+                          };
+                          const list = await api.addCustomTaxonomyEntry(currentProduct, newEntry);
+                          setCustomTaxonomy(list);
+                          setSelectedDefect(newEntry.key);
+                          setShowNewCategoryForm(false);
+                          setNewCategoryRaw('');
+                          setNewCategoryDisplay('');
+                        } catch (e) {
+                          setNewCategoryError((e as Error).message);
+                        } finally {
+                          setSubmittingNewCategory(false);
+                        }
+                      }}
+                      className="w-full py-1.5 bg-kul-blue hover:bg-kul-light disabled:opacity-40 disabled:cursor-not-allowed text-white rounded text-[10px] font-mono uppercase tracking-widest transition-colors"
+                    >
+                      {submittingNewCategory ? 'Adding…' : 'Add Category'}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowNewCategoryForm(true)}
+                    className="mt-3 w-full px-3 py-2 rounded text-xs font-medium flex items-center justify-center gap-1.5 border border-dashed border-surface-border text-text-tertiary hover:text-text-primary hover:border-kul-accent/40 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    New Category
+                  </button>
+                )}
               </div>
 
               {/* Hotkeys */}
@@ -860,7 +991,7 @@ export default function LabelPage() {
                 ) : (
                   <div className="space-y-2">
                     {boundingBoxes.map(box => {
-                      const cat = DEFECT_CATEGORIES.find(c => c.name === box.defect_type);
+                      const cat = activeTaxonomy.find(c => c.key === box.defect_type);
                       return (
                         <div
                           key={box.id}

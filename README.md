@@ -200,14 +200,15 @@ files, no training pipeline, no per-customer mask budget. BGAD remains in
 `research/` as a reference implementation if a deployment eventually
 justifies the training cost.
 
-**FastAPI instead of the Rust backend.** A Rust/Axum backend exists under
-`backend/` but is unused in the current demo path. After the Phase 3
+**FastAPI instead of the Rust backend.** A Rust/Axum backend previously
+existed under `backend/` but was unused in the demo path. After the Phase 3
 reorganization it accumulated compile errors unrelated to the demo, and
-fixing them would not change any user-visible behavior. The FastAPI wrapper
-at `api/main.py` is ~350 lines, maps 1:1 onto the Redis contract, and is
-easy for a university reviewer to read top-to-bottom. The Rust backend can
-be repaired later if production requires tower middleware, SQLx, or higher
-per-request throughput.
+fixing them would not have changed any user-visible behavior, so it was
+removed rather than repaired (see `docs/DECISIONS.md` entry 14). The
+FastAPI wrapper at `api/main.py` is ~350 lines, maps 1:1 onto the Redis
+contract, and is easy for a reviewer to read top-to-bottom. A production
+API layer with tower middleware, SQLx, or higher per-request throughput
+would be built fresh rather than resurrected from git history.
 
 ## Quick Start
 
@@ -309,7 +310,6 @@ RETINA/
 ├── api/                        FastAPI wrapper — the demo HTTP surface
 │   ├── main.py                 8 endpoints, ~350 lines
 │   └── requirements.txt
-├── backend/                    Rust/Axum backend — not used for the demo
 ├── checkpoints/                PatchCore .ckpt files (gitignored, 7.4 GB)
 ├── data/uploads/               Image files uploaded via the API
 ├── docs/
@@ -354,12 +354,10 @@ RETINA/
 │       ├── config.py           Settings (OpenAI key, thresholds, TTLs)
 │       └── models/
 │           ├── vlm_router.py   identify / describe / zero_shot / stage2_refine
-│           ├── patchcore_registry.py  LRU-cached per-category loader
-│           ├── patchcore_real.py      Anomalib / ResNet50 fallback
-│           └── *_stub.py              Legacy stubs — retained for backward compat
+│           └── patchcore_registry.py  LRU-cached per-category loader
 ├── .env.example
 ├── CLAUDE.md                   Operating contract (invariants + protocols)
-├── docker-compose.yml          Wires Postgres/Redis/services — not the demo path
+├── docker-compose.yml          Wires Postgres/Redis/worker — not the demo path
 └── README.md                   (this file)
 ```
 
@@ -382,15 +380,11 @@ RETINA/
    a working reference implementation with published AUROC 0.930 on MVTec.
    It is not plumbed into the worker. Decision: multi-customer portability
    wins over per-category AUROC (see Design Rationale).
-5. **Rust backend does not compile.** `backend/` has drift from the Phase 3
-   reorganization. The demo runs entirely through `api/main.py`. The Rust
-   code is preserved rather than deleted because production may eventually
-   need what it was written for.
-6. **No durable label storage.** Labels land in `retina:labels:{id}` with a
+5. **No durable label storage.** Labels land in `retina:labels:{id}` with a
    7-day TTL. There is no Postgres persistence, no export pipeline, no
    versioning. Good enough for the active learning demo; insufficient for
    audit or retraining on historical labels.
-7. **Session cache bleed across product changes.** `identify_product` is
+6. **Session cache bleed across product changes.** `identify_product` is
    cached under `retina:session:product_class` with a 1-hour TTL to avoid
    per-image cost. If a demo switches product mid-session without clearing
    the cache, the next image routes through the previous product's
@@ -410,8 +404,9 @@ RETINA/
    training cost is acceptable.
 5. **Retraining pipeline.** Nightly memory-bank refresh from labeled
    normals; diff coreset, keep rollback.
-6. **Repair Rust backend + Docker packaging** for production throughput
-   and deployment reproducibility.
+6. **Production API layer + Docker packaging** for higher per-request
+   throughput and deployment reproducibility — built fresh rather than
+   resurrecting the deleted Rust backend (`docs/DECISIONS.md` entry 14).
 7. **Multi-customer deployment.** One-config-per-customer, per-tenant
    taxonomy isolation, per-tenant label storage.
 

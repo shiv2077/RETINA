@@ -3,25 +3,16 @@
 # Docker Compose Configuration
 # =============================================================================
 #
-# Architecture Overview:
-# ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-# │   Frontend  │◄────►│   Backend   │◄────►│    Redis    │
-# │  (Next.js)  │      │ (Rust/Axum) │      │  (Streams)  │
-# └─────────────┘      └──────┬──────┘      └──────▲──────┘
-#                             │                    │
-#                             │ HTTP API           │ Job Queue
-#                             │                    │
-#                             │              ┌─────┴─────┐
-#                             └─────────────►│   Worker  │
-#                                            │  (Python) │
-#                                            └───────────┘
+# This file predates the FastAPI demo path (see README.md "Architecture" /
+# "Design Rationale"). The demo runs api/ + worker/ + frontend/ natively,
+# not via this compose file — api/ has no Dockerfile or service entry here.
+# The Rust backend this file once wired has been removed from the repo
+# (see docs/DECISIONS.md entry 14); postgres and worker below are what
+# remain, kept for reference if a containerized deployment is built later.
 #
-# Communication Patterns:
-# - Frontend → Backend: REST API (HTTP)
-# - Backend → Redis: Job submission (XADD to streams)
-# - Worker ← Redis: Job consumption (XREADGROUP)
-# - Worker → Redis: Result storage (HSET)
-# - Backend ← Redis: Result retrieval (HGET)
+# Communication Patterns (worker/redis, as actually implemented):
+# - Worker ← Redis: Job consumption (XREADGROUP on retina:jobs:queue)
+# - Worker → Redis: Result storage (HSET retina:results:{job_id})
 #
 # =============================================================================
 
@@ -85,61 +76,13 @@ services:
       - retina-network
 
   # ---------------------------------------------------------------------------
-  # Backend - API & Orchestration Layer (Rust/Axum)
-  # ---------------------------------------------------------------------------
-  # Responsibilities:
-  # - REST API for frontend communication
-  # - Image submission handling
-  # - Job scheduling & queuing
-  # - Active learning state management
-  # - System status aggregation
-  #
-  # Note: Does NOT run ML models directly - delegates to worker via Redis
-  # ---------------------------------------------------------------------------
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: retina-backend
-    ports:
-      - "3001:3001"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgres://retina:${POSTGRES_PASSWORD}@postgres:5432/retina
-      - JWT_SECRET=${JWT_SECRET}
-      - BACKEND_HOST=0.0.0.0
-      - BACKEND_PORT=3001
-      - RUST_LOG=info,tower_http=debug,retina_backend=debug
-      - CORS_ALLOWED_ORIGINS=http://localhost:3000
-    volumes:
-      - image-data:/data/images
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - retina-network
-
-  # ---------------------------------------------------------------------------
   # ML Worker - Inference Engine (Python)
   # ---------------------------------------------------------------------------
   # Responsibilities:
-  # - Consume inference jobs from Redis queue
-  # - Run anomaly detection models (PatchCore, PaDiM, WinCLIP stubs)
-  # - Store results back to Redis
-  # - Handle model loading & caching
-  #
-  # Research Status:
-  # - Currently using deterministic stubs for model inference
-  # - Real model integration planned via Anomalib
-  # - Push-pull contrastive learning for Stage 2 (supervised) pending
+  # - Consume inference jobs from Redis queue (XREADGROUP)
+  # - Identify product (gpt-4o-mini), run per-category PatchCore, refine
+  #   ambiguous scores via GPT-4o (see worker/src/retina_worker/worker.py)
+  # - Store results back to Redis, add uncertain samples to the AL pool
   # ---------------------------------------------------------------------------
   worker:
     build:
@@ -159,7 +102,6 @@ services:
       # PatchCore: path inside container (matches volume mount below)
       - PATCHCORE_CHECKPOINT_PATH=/data/models/patchcore
     volumes:
-      # Share image storage with backend so worker can read uploaded files
       - image-data:/data/images
     depends_on:
       redis:
@@ -203,10 +145,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Fixed: was pointing to wrong port 8000, backend is on 3001
+      # No containerized backend exists in this compose file (see the
+      # architecture note at the top). Set this to wherever api/main.py
+      # is actually running.
       - NEXT_PUBLIC_API_URL=http://localhost:3001
-    depends_on:
-      - backend
     networks:
       - retina-network
 

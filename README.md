@@ -164,10 +164,14 @@ when the session cache is cold (product changeover).
 5. If the product is known and has a checkpoint: `PatchCoreRegistry.get(...)`
    returns a hot model, worker runs inference, pulls `anomaly_score` and
    `anomaly_map`.
-6. Routing:
-   - `score < 0.5` → mark normal, no further VLM call.
-   - `0.5 ≤ score < 0.9` → `stage2_refine` with labeled examples.
-   - `score ≥ 0.9` → `describe_defect`.
+6. Routing (exactly one path per score — see `docs/DECISIONS.md` entry 15):
+   - `score ≤ 0.5` → mark normal, no further VLM call.
+   - `0.5 < score < 0.9` → `stage2_refine` with labeled examples first.
+     If Stage 2 confirms the defect, `describe_defect` runs afterward for
+     the operator-facing description; if Stage 2 rejects it as a false
+     positive, no `describe_defect` call is made.
+   - `score ≥ 0.9` → `describe_defect` directly; Stage 2 adds nothing when
+     PatchCore is already this confident.
 7. If the product is unknown or has no checkpoint → `zero_shot_detect` via
    gpt-4o.
 8. Worker builds `InferenceResult`, writes to `retina:results:{job_id}`

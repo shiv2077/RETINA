@@ -305,39 +305,24 @@ class Worker:
         anomaly_score, heatmap = self._run_patchcore(model, image_bytes)
         is_anomaly = anomaly_score > self.settings.anomaly_threshold
 
-        # ── Step 4: if anomalous, VLM describes it ─────────────────────
+        # ── Step 4: VLM refinement — one path per score, not both ───────
+        # score in [0.5, 0.9): Stage 2 confirms or rejects the flag first;
+        #   describe_defect only fires afterward if the image is still
+        #   anomalous, so a Stage-2 rejection skips the description call.
+        # score >= 0.9: PatchCore is already confident; describe_defect
+        #   runs directly, Stage 2 has nothing to add.
         natural_description = None
         defect_type = None
         defect_location = None
         defect_severity = None
         vlm_model_used: Optional[str] = None
         routing_reason = "patchcore_normal"
-
-        if is_anomaly:
-            routing_reason = "patchcore_confirmed_anomaly"
-            logger.info(
-                "describing_defect",
-                product_class=product_class,
-                score=round(anomaly_score, 4),
-            )
-            desc = self.vlm_router.describe_defect(
-                image_bytes,
-                product_class=product_class,
-                anomaly_score=anomaly_score,
-            )
-            natural_description = desc.natural_description
-            defect_type = desc.defect_type
-            defect_location = desc.location
-            defect_severity = desc.severity
-            vlm_model_used = "gpt-4o"
-            vlm_cost_usd += COST_DESCRIBE
-
-        # ── Stage 2: supervised refinement in the uncertainty zone ──────
         stage2_verdict: Optional[str] = None
         stage2_defect_class: Optional[str] = None
         stage2_confidence: Optional[float] = None
 
         if is_anomaly and self.vlm_router.should_run_stage2(anomaly_score):
+            routing_reason = "patchcore_confirmed_anomaly"
             logger.info(
                 "stage2_running",
                 product_class=product_class,
@@ -370,6 +355,20 @@ class Worker:
             else:
                 routing_reason = "stage2_uncertain_kept"
 
+            if is_anomaly:
+                natural_description, defect_type, defect_location, defect_severity = (
+                    self._describe_defect(image_bytes, product_class, anomaly_score)
+                )
+                vlm_cost_usd += COST_DESCRIBE
+
+        elif is_anomaly:
+            routing_reason = "patchcore_confirmed_anomaly"
+            natural_description, defect_type, defect_location, defect_severity = (
+                self._describe_defect(image_bytes, product_class, anomaly_score)
+            )
+            vlm_model_used = "gpt-4o"
+            vlm_cost_usd += COST_DESCRIBE
+
         return self._build_result(
             job=job,
             anomaly_score=anomaly_score,
@@ -394,6 +393,22 @@ class Worker:
     # ─────────────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────────────
+
+    def _describe_defect(
+        self, image_bytes: bytes, product_class: str, anomaly_score: float,
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """Call describe_defect and unpack the fields _run_inference needs."""
+        logger.info(
+            "describing_defect",
+            product_class=product_class,
+            score=round(anomaly_score, 4),
+        )
+        desc = self.vlm_router.describe_defect(
+            image_bytes,
+            product_class=product_class,
+            anomaly_score=anomaly_score,
+        )
+        return desc.natural_description, desc.defect_type, desc.location, desc.severity
 
     def _fetch_labeled_examples(
         self, product_class: str, k: int = 5,

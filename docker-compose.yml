@@ -28,8 +28,9 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: retina-postgres
+    # Bound to loopback only — never expose the database to the LAN.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=retina
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -57,13 +58,19 @@ services:
   redis:
     image: redis:7-alpine
     container_name: retina-redis
+    # Bound to loopback only — never expose the cache/queue to the LAN.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    environment:
+      # redis-cli picks this up automatically, so the healthcheck below
+      # authenticates without repeating the password on its command line.
+      - REDISCLI_AUTH=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     volumes:
       - redis-data:/data
     command: >
-      redis-server 
-      --appendonly yes 
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      --appendonly yes
       --appendfsync everysec
       --maxmemory 512mb
       --maxmemory-policy allkeys-lru
@@ -90,7 +97,7 @@ services:
       dockerfile: Dockerfile
     container_name: retina-worker
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379
       - WORKER_CONCURRENCY=2
       - DEFAULT_UNSUPERVISED_MODEL=patchcore
       - DEBUG_MODE=false
@@ -107,7 +114,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r = redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import os, redis; redis.from_url(os.environ['REDIS_URL']).ping()"]
       interval: 30s
       timeout: 5s
       retries: 3

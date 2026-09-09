@@ -13,6 +13,7 @@ Redis streams. Wire format matches scripts/submit_job.py exactly.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -42,7 +43,9 @@ from retina_worker.schemas import (  # noqa: E402
 UPLOAD_DIR = REPO_ROOT / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-REDIS_URL = "redis://localhost:6379"
+# Carries credentials when Redis runs with requirepass; falls back to a
+# local unauthenticated instance for native dev runs.
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 JOB_QUEUE_STREAM = "retina:jobs:queue"
 RESULT_KEY = "retina:results:{job_id}"
 AL_POOL_KEY = "retina:al:pool"

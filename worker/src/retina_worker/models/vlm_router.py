@@ -12,7 +12,6 @@ Three responsibilities:
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 import json
 
@@ -91,7 +90,6 @@ class VLMRouter:
             stage2_band=(self.stage2_trigger_min, self.stage2_trigger_max),
             key_prefix=key[:10] + "...",
         )
-        self._product_cache: dict[str, ProductIdentification] = {}
 
     @staticmethod
     def _encode_image(image_bytes: bytes, max_side: int = 1024) -> str:
@@ -106,15 +104,7 @@ class VLMRouter:
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    @staticmethod
-    def _image_hash(image_bytes: bytes) -> str:
-        return hashlib.sha256(image_bytes).hexdigest()[:16]
-
     def identify_product(self, image_bytes: bytes) -> ProductIdentification:
-        img_hash = self._image_hash(image_bytes)
-        if img_hash in self._product_cache:
-            return self._product_cache[img_hash]
-
         b64 = self._encode_image(image_bytes)
         known_list = ", ".join(KNOWN_PRODUCT_CATEGORIES)
 
@@ -161,7 +151,6 @@ Respond with JSON:
             data["is_known_category"] = False
 
         result = ProductIdentification(**data)
-        self._product_cache[img_hash] = result
         logger.info(
             "product_identified",
             product=result.product_class,

@@ -36,41 +36,41 @@ class Settings(BaseSettings):
     consumer_name : str
         Unique identifier for this worker in the consumer group.
     """
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
-    
+
     # -------------------------------------------------------------------------
     # Redis Configuration
     # -------------------------------------------------------------------------
     redis_url: str = "redis://localhost:6379"
-    
+
     # -------------------------------------------------------------------------
     # Worker Configuration
     # -------------------------------------------------------------------------
     worker_concurrency: int = 1
     default_unsupervised_model: str = "patchcore"
     consumer_name: str = "worker-1"
-    
+
     # -------------------------------------------------------------------------
     # Development/Debug
     # -------------------------------------------------------------------------
     debug_mode: bool = False
     mock_inference_delay_ms: int = 0
-    
+
     # -------------------------------------------------------------------------
     # Model Configuration
     # -------------------------------------------------------------------------
     # Threshold for binary anomaly classification (score > threshold = anomaly)
     anomaly_threshold: float = 0.5
-    
+
     # Minimum uncertainty score to add sample to active learning pool
     # Samples with uncertainty > this value are candidates for labeling
     uncertainty_threshold: float = 0.3
-    
+
     # -------------------------------------------------------------------------
     # Active Learning Configuration
     # -------------------------------------------------------------------------

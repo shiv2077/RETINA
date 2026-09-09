@@ -38,7 +38,6 @@ import io
 import signal
 import time
 from datetime import datetime
-from typing import Optional
 
 import numpy as np
 import structlog
@@ -57,7 +56,6 @@ from .schemas import (
     InferenceResult,
     JobStatus,
     ModelType,
-    PipelineStage,
     Stage1Output,
 )
 
@@ -92,8 +90,8 @@ class Worker:
     running : bool
         Whether the worker is currently running
     """
-    
-    def __init__(self, settings: Optional[Settings] = None):
+
+    def __init__(self, settings: Settings | None = None):
         """
         Initialize the worker.
         
@@ -109,19 +107,19 @@ class Worker:
         # Router + registry — loaded lazily on first inference.
         self.registry = get_default_registry()
         self.vlm_router = VLMRouter(api_key=self.settings.openai_api_key)
-        self._session_product_class: Optional[str] = None
-        self._session_product_confidence: Optional[float] = None
+        self._session_product_class: str | None = None
+        self._session_product_confidence: float | None = None
         self._score_clamp_warned: bool = False
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
-    
+
     def _handle_shutdown(self, signum: int, frame) -> None:
         """Handle shutdown signals gracefully."""
         logger.info("Shutdown signal received", signal=signum)
         self.running = False
-    
+
     def run(self) -> None:
         """
         Start the worker loop.
@@ -134,15 +132,15 @@ class Worker:
             consumer_name=self.settings.consumer_name,
             default_model=self.settings.default_unsupervised_model,
         )
-        
+
         # Check Redis connection
         if not self.redis.health_check():
             logger.error("Cannot connect to Redis")
             return
-        
+
         logger.info("Connected to Redis")
         self.running = True
-        
+
         while self.running:
             try:
                 self._process_next_job()
@@ -150,9 +148,9 @@ class Worker:
                 logger.exception("Unexpected error in worker loop", error=str(e))
                 # Brief pause before retrying to avoid tight loop on persistent errors
                 time.sleep(1)
-        
+
         logger.info("Worker shutdown complete")
-    
+
     def _process_next_job(self) -> None:
         """
         Process the next job from the queue.
@@ -161,13 +159,13 @@ class Worker:
         """
         # Read next job (blocking)
         job_data = self.redis.read_job(block_ms=5000)
-        
+
         if job_data is None:
             # No job available, continue polling
             return
-        
+
         entry_id, job = job_data
-        
+
         logger.info(
             "Processing job",
             job_id=job.job_id,
@@ -175,23 +173,23 @@ class Worker:
             model=job.model_type.value,
             stage=job.stage.value,
         )
-        
+
         # Update status to processing
         self.redis.update_job_status(job.job_id, JobStatus.PROCESSING)
-        
+
         start_time = time.time()
-        
+
         try:
             # Run inference
             result = self._run_inference(job)
-            
+
             # Calculate processing time
             processing_time_ms = int((time.time() - start_time) * 1000)
             result.processing_time_ms = processing_time_ms
-            
+
             # Store result
             self.redis.store_result(result)
-            
+
             # Add to labeling pool if uncertain
             if result.active_learning.uncertainty_score > self.settings.uncertainty_threshold:
                 self.redis.add_to_labeling_pool(
@@ -199,10 +197,10 @@ class Worker:
                     anomaly_score=result.anomaly_score or 0.0,
                     uncertainty_score=result.active_learning.uncertainty_score,
                 )
-            
+
             # Increment completed counter
             self.redis.increment_completed_jobs()
-            
+
             logger.info(
                 "Job completed",
                 job_id=job.job_id,
@@ -210,10 +208,10 @@ class Worker:
                 is_anomaly=result.is_anomaly,
                 processing_time_ms=processing_time_ms,
             )
-            
+
         except Exception as e:
             logger.exception("Job failed", job_id=job.job_id, error=str(e))
-            
+
             # Store failure result
             result = InferenceResult(
                 job_id=job.job_id,
@@ -226,11 +224,11 @@ class Worker:
                 ),
             )
             self.redis.store_result(result)
-        
+
         finally:
             # Always acknowledge the job
             self.redis.acknowledge_job(entry_id)
-    
+
     def _run_inference(self, job: InferenceJob) -> InferenceResult:
         """
         Run inference on a job using the VLM router + per-category PatchCore
@@ -315,11 +313,11 @@ class Worker:
         defect_type = None
         defect_location = None
         defect_severity = None
-        vlm_model_used: Optional[str] = None
+        vlm_model_used: str | None = None
         routing_reason = "patchcore_normal"
-        stage2_verdict: Optional[str] = None
-        stage2_defect_class: Optional[str] = None
-        stage2_confidence: Optional[float] = None
+        stage2_verdict: str | None = None
+        stage2_defect_class: str | None = None
+        stage2_confidence: float | None = None
 
         if is_anomaly and self.vlm_router.should_run_stage2(anomaly_score):
             routing_reason = "patchcore_confirmed_anomaly"
@@ -396,7 +394,7 @@ class Worker:
 
     def _describe_defect(
         self, image_bytes: bytes, product_class: str, anomaly_score: float,
-    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None, str | None, str | None]:
         """Call describe_defect and unpack the fields _run_inference needs."""
         logger.info(
             "describing_defect",
@@ -437,7 +435,7 @@ class Worker:
             logger.warning("stage2_label_fetch_failed", error=str(e))
             return []
 
-    def _load_image_bytes(self, job: InferenceJob) -> Optional[bytes]:
+    def _load_image_bytes(self, job: InferenceJob) -> bytes | None:
         """Read the image file written by the submitter, or return None."""
         if not job.image_path:
             return None
@@ -454,7 +452,7 @@ class Worker:
             )
             return None
 
-    def _get_cached_product_class(self) -> Optional[str]:
+    def _get_cached_product_class(self) -> str | None:
         """Return the current session product class from Redis (or None)."""
         pc = self.redis.client.get(SESSION_PRODUCT_KEY)
         if pc is None:
@@ -480,7 +478,7 @@ class Worker:
 
     def _run_patchcore(
         self, model, image_bytes: bytes,
-    ) -> tuple[float, Optional[np.ndarray]]:
+    ) -> tuple[float, np.ndarray | None]:
         """Run Patchcore on raw image bytes; return (score, heatmap)."""
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         tensor = TVF.to_image(img)
@@ -496,7 +494,7 @@ class Worker:
                 logger.warning("patchcore_score_out_of_range", raw_score=score)
                 self._score_clamp_warned = True
             score = max(0.0, min(1.0, score))
-        heatmap: Optional[np.ndarray] = None
+        heatmap: np.ndarray | None = None
         if out.anomaly_map is not None:
             heatmap = out.anomaly_map.squeeze().cpu().numpy()
         return score, heatmap
@@ -507,21 +505,21 @@ class Worker:
         job: InferenceJob,
         anomaly_score: float,
         is_anomaly: bool,
-        product_class: Optional[str],
-        product_confidence: Optional[float],
-        natural_description: Optional[str],
-        defect_type: Optional[str],
-        defect_location: Optional[str],
-        defect_severity: Optional[str],
+        product_class: str | None,
+        product_confidence: float | None,
+        natural_description: str | None,
+        defect_type: str | None,
+        defect_location: str | None,
+        defect_severity: str | None,
         routing_reason: str,
-        vlm_model_used: Optional[str],
+        vlm_model_used: str | None,
         vlm_api_cost_estimate_usd: float,
-        heatmap: Optional[np.ndarray],
+        heatmap: np.ndarray | None,
         model_used: ModelType,
         t_start: float,
-        stage2_verdict: Optional[str] = None,
-        stage2_defect_class: Optional[str] = None,
-        stage2_confidence: Optional[float] = None,
+        stage2_verdict: str | None = None,
+        stage2_defect_class: str | None = None,
+        stage2_confidence: float | None = None,
     ) -> InferenceResult:
         """Assemble the final InferenceResult. Stage2Output stays None."""
         uncertainty = 1.0 - abs(2.0 * anomaly_score - 1.0)

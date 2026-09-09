@@ -247,9 +247,11 @@ cp .env.example .env
 $EDITOR .env
 ```
 
-The Postgres / JWT entries in `.env.example` are vestigial (the demo does
-not use Postgres). `REDIS_URL` should point at your local Redis, e.g.
-`redis://localhost:6379`.
+The Postgres and JWT entries have been removed from `.env.example` — the demo
+uses neither (see `docs/DECISIONS.md` #10 and #13). `REDIS_PASSWORD` is now
+required: Redis runs with `--requirepass` and is bound to `127.0.0.1` only, so
+`REDIS_URL` must carry the password, e.g.
+`redis://:your_password@localhost:6379`.
 
 ### Train PatchCore Checkpoints
 

@@ -4,85 +4,100 @@
 
 ---
 
+> ## ⚠ STALENESS BANNER — 2026-09-09
+>
+> **Every Rust/Axum instruction in this file was stale.** `backend/` (Rust/Axum)
+> and `legacy/fastapi_backend/` were both **deleted** in commit `4ff54ba`.
+> There is no Rust in this repo, no Cargo.toml, no `cargo check`, no JWT auth,
+> and no Postgres. See `docs/DECISIONS.md` #14 for the rationale.
+>
+> The backend is now **`api/main.py`** — a single-file FastAPI wrapper over
+> Redis. Its complete route list is in §2.3.
+>
+> Sections 0.2, 0.3, 1.2, 1.3, 1.5, 2.x, 3, 7.1 and 11 have been rewritten
+> against the current tree. Sections 4, 5, 6 and 8 were audited but describe
+> the worker/frontend/ML layers, which still exist.
+>
+> **Where this file and `docs/DECISIONS.md` disagree, DECISIONS.md wins** — it
+> is written against the running code and cites file:line evidence.
+
+---
+
 ## 0. PROJECT STATE — UPDATE THIS EVERY SESSION
 
 > This section must be kept current. If it is stale, update it before
 > doing anything else. A stale state summary is worse than no summary.
 
 ### 0.1 What layer you are in right now
-- [ ] Backend (Rust/Axum) — `backend/`
+- [ ] API (Python/FastAPI) — `api/main.py`
 - [ ] ML Worker (Python) — `worker/`
 - [ ] Frontend (Next.js) — `frontend/`
 - [ ] Infra (Docker/config) — root
 
 ### 0.2 Current implementation status
-Last verified: 2026-04-20
+Last verified: 2026-09-09
 
 | Component | Status | Notes |
 |---|---|---|
-| Backend API (Axum) | ~75% | /upload endpoint missing; cascade routes missing |
-| Auth (JWT + Argon2) | DONE | JWT secret now from config, not env directly |
-| Image storage service | DONE | O(n) scan known perf issue |
-| Redis service layer | DONE | Job submission, results, labeling pool working |
-| Worker poll loop | DONE | XREADGROUP loop; cold-start GPT-4V fallback; image bytes loaded |
-| PatchCore (real) | DONE | patchcore_real.py — Anomalib or ResNet50 fallback |
-| GPT-4V detector | DONE | gpt4v_detector.py — base64, retry, 500 tokens |
-| Stage 2 model | STUB ONLY | pushpull_stub.py — Dutch category names fixed |
-| BGAD | RESEARCH ONLY | research/supervised/BGAD/ — not wired into worker |
-| Multi-class classifier | MISSING | No production implementation |
-| Active learning module | PARTIAL | Pool defined; uncertainty sampling not built |
-| Expert Review page | PARTIAL | UI done; POST /labels/submit works; cascade endpoints 404 |
-| Model Performance page | DONE | Created — benchmark table + Decospan taxonomy |
-| Stage 2 activation logic | PARTIAL | Threshold in config (default 200); retina:system:stage key not used |
-| Cascade inference route | MISSING | Frontend calls POST /api/predict/cascade; Rust has no such route |
+| API (`api/main.py`) | DONE | FastAPI over Redis. 8 routes, all listed in §2.3 |
+| Rust/Axum backend | **DELETED** | Removed in `4ff54ba`. See DECISIONS.md #14 |
+| Auth (JWT + Argon2) | **DELETED** | No auth on the API at all. DECISIONS.md #13 |
+| Postgres | **DELETED** | Redis with TTL is the only store. DECISIONS.md #10 |
+| Worker poll loop | DONE | XREADGROUP on `retina:jobs:queue`, group `workers` |
+| PatchCore (Stage 1) | DONE | Per-category checkpoints, 2-model LRU cache (#11) |
+| VLM router | DONE | `vlm_router.py` — identify / zero-shot / describe / refine |
+| Stage 2 | DONE | GPT-4o in-context refiner, **not** BGAD. DECISIONS.md #3 |
+| Multi-class classifier | NOT BUILT | Deliberately. DECISIONS.md #5 |
+| BGAD / Push-Pull | RESEARCH ONLY | `research/supervised/` — zero imports from runtime |
+| Active learning pool | DONE | `retina:al:pool`, sorted by score (known flaw, §6.3) |
+| Expert Review page | DONE | `/label` runs on `/api/labels/pool` + `/api/labels/submit` |
+| Model Performance page | DONE | Static benchmark reference |
 
 ### 0.3 Known unfixed bugs — mark FIXED when resolved
-- [x] FIXED 2026-04-20: Port mismatch — api.ts fallback now localhost:3001
-- [x] FIXED: pydantic-settings in pyproject.toml
-- [x] FIXED: Worker can load image bytes via image_path on shared volume
-- [x] FIXED 2026-04-20: JWT_SECRET no longer hardcoded in docker-compose.yml
-- [ ] 5 phantom cascade routes that 404 on Rust backend (see section 2.3)
-- [ ] CORS wildcard allow_origin(Any) — unsafe for any non-local deploy
-- [ ] No image upload endpoint (POST /api/images/upload not registered)
-- [ ] worker_dual.py REMOVED — was dead code with broken ModelType.PUSH_PULL enum
+- [x] FIXED 2026-09-09 (F6): six frontend clients called routes no backend
+      ever served (`/api/predict/cascade`, the four `/api/labeling/cascade/*`
+      routes, `/api/system/status`). Deleted, call sites rebuilt on real routes.
+- [x] FIXED 2026-09-09 (F24): UI claimed BGAD was the Stage 2 model.
+- [x] FIXED 2026-04-20: `api.ts` fallback URL is `localhost:3001`.
+- [ ] CORS is wide open on `api/main.py` — local dev only.
+- [ ] No auth on any route (deliberate for the demo — DECISIONS.md #13, but it
+      is a blocker for any deployment).
+- [ ] Labels expire after 7 days with no export path (DECISIONS.md #10). This
+      is the largest gap between this build and a deployable system.
+- [ ] `results/page.tsx` still carries a per-category evaluation table, a
+      confusion matrix and an "Evaluate" button wired to nothing. No endpoint
+      supplies evaluation data; either build one or delete the sections.
 
 ### 0.4 What is in progress right now
-Session: 2026-04-20
+Session: 2026-09-09
 Completed:
-  - Full codebase audit (docs/archive/audit-2026-04-20.md)
-  - Repository reorganisation — research/, notebooks/, docs/, legacy/
-  - api.ts fallback URL fixed (8000 → 3001)
-  - docker-compose.yml secrets removed (POSTGRES_PASSWORD, JWT_SECRET now from .env)
-  - .env.example created
-  - JWT secret threaded through Config struct (no more direct env::var in route handler)
-  - Stage 2 threshold default fixed: 100 → 200 in config.rs
-  - shared/schemas/job.json: gpt4v added to model_type enum
-  - worker_dual.py deleted (dead code, broken enum)
-  - pushpull_stub.py: DEFECT_CATEGORIES switched to Dutch canonical names
-  - worker config defaults fixed: debug_mode=False, mock_inference_delay_ms=0
-  - model-performance page created (was 404 from NavHeader)
-  - research/README.md created explaining what is and isn't wired
-  - CLAUDE.md §1.3 Redis keys corrected to match actual code
+  - F6: removed the six dead API clients and their types from `api.ts`;
+    rebuilt the dashboard on `/health` + `/api/labels/pool`, rewired
+    `/demo` onto `/api/submit` + `/api/result/{id}`.
+  - F24: replaced every BGAD label in the UI with the GPT-4o refiner.
+  - F5: this file, de-Rusted against the current tree.
+  - F27: corrected the `worker/main.py` module docstring defaults.
 Next session should start with:
-  1. Add POST /api/images/upload route to Rust backend (images.rs)
-  2. Add POST /api/predict/cascade route to Rust backend (section 2.3)
-  3. Wire real Push-Pull or BGAD model into worker Stage 2 slot
+  1. Decide the fate of the dead evaluation UI in `results/page.tsx`.
+  2. Label persistence beyond the 7-day Redis TTL (DECISIONS.md #10).
+  3. Lock down CORS before anything leaves localhost.
 
 ### 0.5 Repo structure
 ```
-backend/          Rust/Axum API server (production)
+api/main.py       FastAPI wrapper over Redis — THE backend (production)
 worker/           Python ML inference worker (production)
 frontend/         Next.js 14 UI (production)
 shared/schemas/   JSON Schema contracts (source of truth)
-research/         Standalone ML research code — NOT wired into pipeline
-notebooks/        Jupyter notebooks
-scripts/          Training and evaluation scripts
-docs/             Guides, figures, session archives
-legacy/           Archived FastAPI backend (src/backend/ prior to 2026-04-20)
+research/         Standalone ML research code — NOT wired into the pipeline
+scripts/          Training, evaluation and run scripts (run_api.sh etc.)
+docs/             Guides, figures, DECISIONS.md, session archives
 docker-compose.yml
 .env              Never commit — secrets live here
 .env.example      Template — copy to .env to start
 ```
+
+Deleted, do not look for them: `backend/` (Rust/Axum) and
+`legacy/fastapi_backend/`, both removed in `4ff54ba` (DECISIONS.md #14).
 
 ---
 
@@ -108,13 +123,16 @@ Camera -> [Stage 1: Unsupervised] -> PASS or ANOMALY_FLAGGED
 - Stage 1 can generate false positives — that is expected and acceptable.
 - Stage 1 output: {anomaly_score: float, is_anomaly: bool, heatmap: array}
 
-**Stage 2 — Supervised detection + classification:**
-- Only runs on images that Stage 1 flags as anomalous
-- Primary model: BGAD (AUC 0.93, requires labelled defects + masks)
-- Fallback: Custom Push-Pull (AUC 0.86, works with 100-200 samples, no masks)
-- Stage 2 activates automatically when label count >= active_learning_stage2_threshold
-- Before Stage 2 is active: all Stage 1 flags go directly to expert review queue
-- Stage 2 output: {defect_class: str, confidence: float, bounding_box: BBox | null}
+**Stage 2 — GPT-4o in-context refiner (NOT a trained model):**
+- Only runs on scores in the uncertainty band `[0.5, 0.9)` — see §6.4
+- `stage2_refine` sends the image plus up to 5 operator-labelled examples
+  from `retina:labels:*` to gpt-4o as few-shot context. No training step.
+- BGAD and Push-Pull were evaluated and rejected (DECISIONS.md #3). They live
+  in `research/supervised/` with zero imports from the running system.
+- Stage 2 output: `{verdict, defect_class, confidence}` where verdict is
+  `confirmed_anomaly` | `rejected_false_positive` | `uncertain`
+- Stage 2 runs before `describe_defect`, so a rejection skips the description
+  call entirely (DECISIONS.md #15)
 
 **The routing rule — lives in worker.py only:**
 ```
@@ -130,34 +148,45 @@ Do not implement this routing logic anywhere except worker.py.
 ### 1.2 Schema contracts — the ground truth
 
 shared/schemas/job.json, result.json, label.json define the wire format
-between Rust and Python. They are the authoritative source.
+between `api/main.py` and the worker. They are the authoritative source.
 
 **Update protocol — follow this order exactly:**
 1. Edit the JSON Schema file first
-2. Update backend/src/models/ (Rust structs) — cargo check must pass
-3. Update worker/src/retina_worker/schemas.py (Pydantic models)
-4. Run: docker compose build worker backend
+2. Update `worker/src/retina_worker/schemas.py` (Pydantic models)
+3. Update the matching Pydantic model in `api/main.py`
+4. Update `frontend/src/lib/api.ts` if the shape crosses the HTTP boundary
+5. Run: `docker compose build worker`
 
-Breaking this order causes silent data corruption. The audit found
-schemas.py and the Rust models had already drifted once.
+Breaking this order causes silent data corruption: both sides read the same
+Redis hash, so a drifted field is written by one and ignored by the other with
+no error anywhere.
 
 ### 1.3 Redis key namespacing — never invent keys without documenting here
 
 ```
-retina:jobs:{job_id}          Hash      InferenceJob status + data
-retina:jobs:queue             Stream    Pending jobs (XREADGROUP, NOT LPUSH)
-retina:results:{job_id}       Hash      InferenceResult fields
-retina:images:{image_id}      Hash      latest_job_id for image→job lookup
-retina:labels:{image_id}      Hash      label_data JSON after expert labeling
-retina:alerts                 List      Recent anomaly alerts (LPUSH/LRANGE)
-retina:al:pool                SortedSet score = uncertainty_score (see 6.3)
-retina:al:samples:{image_id}  String    UnlabeledSample metadata JSON
-retina:system:stats           Hash      jobs_submitted, jobs_completed, labels_collected
-retina:mismatches             Set       job_ids where supervised ≠ unsupervised
+retina:jobs:queue                Stream     Pending jobs (XADD by api, XREADGROUP by worker)
+retina:jobs:{job_id}             Hash       Job status + data
+retina:results:{job_id}          Hash       Field `result_data` = InferenceResult JSON
+retina:images:{image_id}         Hash       Fields: image_path, latest_job_id
+retina:labels:{image_id}         Hash       Expert label + polygons/boxes. TTL 7 days
+retina:al:pool                   SortedSet  Labeling pool, score = anomaly_score (see §6.3)
+retina:al:samples:{image_id}     String     UnlabeledSample metadata JSON
+retina:system:stats              Hash       Counters, incl. the label count
+retina:alerts                    List       Recent alerts (LPUSH, LTRIM to 100)
+retina:taxonomy:{product_class}  String     Operator-added defect categories JSON
 ```
 
-Consumer group name: `workers`
+Consumer group name: `workers` (`redis_client.py:51`)
 Stream name: `retina:jobs:queue`
+
+Verified 2026-09-09 against `worker/src/retina_worker/redis_client.py` and
+`api/main.py`. Two keys previously documented here **do not exist** anywhere in
+the codebase and have been removed: `retina:mismatches` and `retina:system:stage`.
+(The Stage 2 activation flag is obsolete regardless — see §6.4.)
+
+> **Follow-up needed.** Work is landing in parallel that adds a dead-letter
+> stream and a label index. This table documents only what existed at the time
+> of writing; re-verify against `redis_client.py` after those merge.
 
 If you add a Redis key, add it to this table with type, pattern, and purpose.
 
@@ -177,11 +206,15 @@ This is the root cause of the image_id-only bug in the worker.
 ### 1.5 Port contract — these are fixed
 
 ```
-frontend:  3000 -> 3000
-backend:   3001 -> 3001   <- NEXT_PUBLIC_API_URL must point here, not 8000
-postgres:  5432 (internal only — never expose externally)
-redis:     6379 (internal only — never expose externally)
+frontend:  3000        Next.js dev server / container
+api:       3001        uvicorn api.main:app  (scripts/run_api.sh)
+                       <- NEXT_PUBLIC_API_URL must point here
+redis:     6379        bound to 127.0.0.1 only, NOT published to the network.
+                       Runs with --requirepass; REDIS_PASSWORD is required.
 ```
+
+Postgres is gone — there is no 5432. The API runs on the host, not in
+docker-compose; `scripts/run_api.sh` is the entry point.
 
 ---
 
@@ -193,24 +226,23 @@ Do not proceed until you can answer YES to every applicable item:
 
 ```
 [ ] I have read the file I am about to change (not assumed its contents)
-[ ] If changing a shared schema: I will update JSON -> Rust -> Python in that order
+[ ] If changing a shared schema: JSON -> worker schemas.py -> api/main.py -> api.ts
 [ ] If adding a Redis key: I have documented it in section 1.3
 [ ] If adding an API route: I have added the function to api.ts in the same commit
+[ ] If removing an API route: I have removed its api.ts client and every call site
 [ ] If adding a Python dep: added to pyproject.toml [project.dependencies]
-[ ] If adding a Rust dep: added to Cargo.toml with a pinned major version
 [ ] If changing Docker config: verified volumes, ports, and env vars are consistent
 [ ] My change does not load an ML model per-request
-[ ] My change does not use .unwrap() or .expect() in a Rust route handler
 ```
 
 ### 2.2 After making a change — verification steps
 
 Do not mark a task done without running these:
 
-**Backend change:**
+**API change (`api/main.py`):**
 ```bash
-cd backend && cargo check          # Must pass with 0 errors
-cd backend && cargo test           # Must pass
+python -m ruff check api/
+python -c "import api.main"        # import must succeed
 ```
 
 **Worker change:**
@@ -226,58 +258,69 @@ cd frontend && npx tsc --noEmit    # Must pass
 cd frontend && npm run build       # Must pass
 ```
 
-**Full stack change:**
+**Full stack:**
 ```bash
-docker compose up --build          # All services must reach healthy state
-curl http://localhost:3001/health  # Must return 200
+docker compose up --build          # redis + worker + frontend
+./scripts/run_api.sh               # API on the host, port 3001
+curl http://localhost:3001/health  # {"status":"ok","redis":"up"}
 ```
 
-### 2.3 The five phantom frontend routes — fix before adding more
+### 2.3 The complete backend route list
 
-These frontend API calls currently 404 on every request.
+`api/main.py` serves these eight routes and **nothing else**. Any frontend call
+to a path not on this list is a 404. Verify against the file before adding a
+client function to `api.ts`.
 
-| Frontend calls | Backend has | Action needed |
+| Method | Path | Purpose |
 |---|---|---|
-| POST /api/predict/cascade | Nothing | Add Rust route or remove cascade mode |
-| POST /inference/predict | Nothing | Add route or map to /api/images/submit |
-| GET /inference/history | Nothing | Add route |
-| GET /pipeline/stage2/samples | Nothing | Add route or map to /labels/pool |
-| GET /status | /api/system/status | Fix frontend URL |
+| POST | `/api/submit` | multipart image upload -> XADD to the job stream, returns `{job_id}` |
+| GET | `/api/result/{job_id}` | InferenceResult, `?wait=N` to long-poll |
+| GET | `/api/labels/pool` | active learning pool, `?limit=N` |
+| POST | `/api/labels/submit` | persist an expert label + polygons/boxes |
+| GET | `/api/images/{image_id}` | serve image bytes (5 lookup strategies) |
+| GET | `/api/taxonomy/{product_class}` | operator-added defect categories |
+| POST | `/api/taxonomy/{product_class}` | append a defect category |
+| GET | `/health` | `{"status":"ok","redis":"up"}` |
+
+The five "phantom routes" this section used to track were resolved in 2026-09-09
+by deleting the frontend clients (F6), not by adding routes. There was never a
+backend that served them.
 
 ---
 
-## 3. RUST BACKEND
+## 3. THE API (`api/main.py`)
 
-### 3.1 Error handling
-- All errors go through AppError in src/error.rs. Use ? operator.
-- Never use .unwrap() or .expect() in route handlers.
-  If you do: the worker crashes on first unexpected input and takes
-  down the entire inference pipeline.
-- Log at the point of origin with tracing::error!, not at the boundary.
-- Return structured JSON: {"error": "message", "code": "ERROR_CODE"}
-  Never return plain text — the frontend cannot parse it.
+> The Rust/Axum backend this section used to describe was deleted in `4ff54ba`.
+> There is no `src/error.rs`, no `AppError`, no SQLx, no `.unwrap()` to avoid,
+> and no `src/services/`. See `docs/DECISIONS.md` #14.
 
-### 3.2 Database
-- Raw SQL via SQLx — no ORM. Queries live in src/services/ only.
-  Never inline SQL in route handlers.
-- All migrations in src/db/pool.rs. Use ADD COLUMN IF NOT EXISTS,
-  never DROP COLUMN. We have no rollback mechanism yet.
-- TODO: migrate to sqlx::migrate! for compile-time checked migrations.
-  Until then, every SQL statement must be idempotent.
-- Known perf issue: read_image() in image_storage.rs does an O(n)
-  directory scan. Do not make it worse. Do not call it in a loop.
+### 3.1 Shape
+One file, ~350 lines, no router modules and no service layer. It is a thin
+HTTP surface over Redis: every handler reads or writes a key from §1.3 and
+returns. Keep it that way — inference logic belongs in the worker, not here.
 
-### 3.3 Redis
-- All Redis calls go through src/services/redis.rs — never call
-  the Redis client directly from a route handler.
-- Job queue is a Redis Stream. Use XREADGROUP / XACK.
-  Using LPUSH/LPOP breaks at-least-once delivery guarantees.
-  Stream consumer group name: retina-workers
+### 3.2 Error handling
+- Raise `HTTPException(status, detail)`. FastAPI serialises it as
+  `{"detail": "..."}`, which is what `apiFetch()` in `api.ts` parses.
+- Never let a `redis.RedisError` escape as a 500 with a stack trace; catch it
+  and return a 503 with a readable detail, as `/health` does.
+- Log with `structlog`, bound to `job_id` or `image_id`.
 
-### 3.4 Auth
-- JWT secret from config.jwt_secret — never hardcode.
-- CORS: currently allow_origin(Any) — acceptable for local dev only.
-  Restrict to config.cors_allowed_origins before any external deploy.
+### 3.3 Persistence
+- Redis is the only store. There is no database, no migration, no ORM
+  (DECISIONS.md #10).
+- Anything written must carry a TTL or be explicitly unbounded by design.
+  Labels and results are 7 days.
+- Redis requires a password (`REDIS_PASSWORD`); connect via `REDIS_URL`.
+
+### 3.4 Queue
+- The job queue is a Redis Stream. `api/main.py` XADDs; the worker consumes
+  with XREADGROUP under group `workers`. Never LPUSH to it.
+
+### 3.5 Auth and CORS
+- **There is no authentication.** This is deliberate for the demo
+  (DECISIONS.md #13) and is a hard blocker for any deployment.
+- CORS is currently wide open. Restrict it before anything leaves localhost.
 
 ---
 
@@ -414,8 +457,11 @@ Required behavior:
 - Display flagged image with GPT-4V bounding box suggestion overlaid
   (purple dashed) and GPT-4V description + reasoning visible
 - Operator can: accept suggestion / modify box / reject and reclassify
-- Submit payload to POST /labels/submit:
-  {job_id, label, defect_class, bounding_box?, operator_id, accepted_gpt4v_suggestion}
+- Submit payload to POST /api/labels/submit — this is the `LabelSubmission`
+  model in api/main.py, keyed on image_id, not job_id:
+  {image_id, product_class, label, defect_class?, polygons?, boxes?,
+   operator_id?, notes?}
+  A successful submit removes the image from `retina:al:pool`.
 - Keyboard shortcuts (non-negotiable for operator efficiency):
   S = skip, Enter = submit, Z = undo, 1-9 = quick class select
 - Show running count: "12 reviewed this session / 47 remaining"
@@ -501,20 +547,25 @@ uncertainty = -sum(p * log(p) for p in class_probs)
 Do not implement this until the multi-class classifier exists.
 When you implement it, update this section.
 
-### 6.4 Stage 2 activation sequence
+### 6.4 Stage 2 gating — there is no activation threshold
 
-Trigger: COUNT(labeling_pool WHERE status='labelled') >= active_learning_stage2_threshold
+> **Obsolete.** This section used to describe a label-count threshold that
+> "activated" a trained BGAD Stage 2, writing `retina:system:stage`. None of
+> that exists. There is no threshold, no retraining trigger, and no stage key.
 
-Execute in this order:
-1. Log: INFO stage2_activated label_count=N threshold=N
-2. Start BGAD retraining as background task (non-blocking)
-3. Set retina:system:stage key in Redis to "2"
-4. Worker reads this key at start of each job to choose pipeline
-5. Stage 1 continues running — it provides the heatmap even in Stage 2
-6. Notify frontend via the alerts channel
+Stage 2 is always available, because it is a GPT-4o call rather than a trained
+model (DECISIONS.md #3). It is gated on the **score**, not on a label count:
 
-The config key is active_learning_stage2_threshold (default: 200).
-Never hardcode 200 anywhere in the codebase.
+- `should_run_stage2` (`vlm_router.py`) returns true for
+  `anomaly_score` in `[0.5, 0.9)` — the uncertainty band (DECISIONS.md #4).
+- Above 0.9, PatchCore is confident and the refiner has nothing to add.
+- Below 0.5, nothing runs — a confidently-wrong PatchCore score is never
+  caught. That is a known and accepted consequence.
+- Stage 2 runs *before* `describe_defect`, so a rejected false positive never
+  pays for a description (DECISIONS.md #15).
+
+More operator labels make Stage 2 better by enriching the few-shot examples
+pulled from `retina:labels:*`, not by crossing any threshold.
 
 ### 6.5 Dataset locations
 
@@ -536,21 +587,23 @@ These must be in .env at repo root — never in docker-compose.yml values:
 
 ```bash
 # .env — never commit this file
-POSTGRES_PASSWORD=<strong-random-password>
-JWT_SECRET=<min-32-char-random-string>
-OPENAI_API_KEY=sk-...
+REDIS_PASSWORD=<strong-random-password>   # REQUIRED — redis runs --requirepass
+OPENAI_API_KEY=sk-...                     # REQUIRED — Stage 1 fallback + Stage 2
 
 # Worker ML config
 PATCHCORE_CHECKPOINT_PATH=/data/checkpoints/patchcore.pt
 GPT4V_PRODUCT_TYPE=manufactured product
 
 # Connection strings
-DATABASE_URL=postgresql://retina:${POSTGRES_PASSWORD}@postgres:5432/retina
-REDIS_URL=redis://redis:6379
+REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
 
 # Frontend
 NEXT_PUBLIC_API_URL=http://localhost:3001
 ```
+
+`POSTGRES_PASSWORD`, `DATABASE_URL` and `JWT_SECRET` are **gone**. Postgres was
+removed with the Rust backend (DECISIONS.md #10, #14) and there is no auth to
+sign tokens for (#13). If you find them in a `.env`, they are dead entries.
 
 docker-compose.yml references these as ${VAR_NAME} only.
 Never paste secret values directly into the compose file.
@@ -558,16 +611,9 @@ Never paste secret values directly into the compose file.
 ### 7.2 Health checks — every service must have one
 
 ```yaml
-# backend
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
-  interval: 10s
-  timeout: 5s
-  retries: 3
-
 # worker
 healthcheck:
-  test: ["CMD", "python", "-c", "import redis; redis.Redis.from_url('redis://redis:6379').ping()"]
+  test: ["CMD", "python", "-c", "import os,redis; redis.Redis.from_url(os.environ['REDIS_URL']).ping()"]
   interval: 15s
   timeout: 5s
   retries: 3
@@ -579,6 +625,11 @@ healthcheck:
   timeout: 5s
   retries: 3
 ```
+
+There is no `backend` service to health-check. The API runs on the host via
+`scripts/run_api.sh`; check it with `curl -f http://localhost:3001/health`.
+Redis needs `REDIS_PASSWORD` in its healthcheck too now that it runs
+`--requirepass` — a bare `redis-cli ping` returns NOAUTH.
 
 ### 7.3 Dockerfile layer ordering — do not break build cache
 
@@ -602,21 +653,21 @@ Cause-and-effect rules derived from confirmed bugs in the audit.
 
 | If you do this | This breaks |
 |---|---|
-| Change JSON schema without updating Rust + Python | Silent data corruption in Redis — jobs process but results are wrong |
-| Use .unwrap() in a Rust route handler | Worker crashes on first malformed input, takes down entire pipeline |
+| Change a JSON schema without updating worker schemas.py AND api/main.py | Silent data corruption in Redis — jobs process but results are wrong |
 | Load ML model per-request | Worker OOMs after ~3 images, container restarts, jobs lost |
-| LPUSH/LPOP on job queue instead of XREADGROUP | At-least-once delivery broken — jobs silently dropped under load |
-| Add backend route without updating api.ts | Frontend 404s silently — users see blank data, no error message |
-| Leave message unacknowledged on worker failure | Same job redelivered forever, blocking all new jobs |
-| Store absolute host paths in DB | Path breaks when container is recreated — images become inaccessible |
+| LPUSH/LPOP on the job queue instead of XREADGROUP | At-least-once delivery broken — jobs silently dropped under load |
+| Add a backend route without updating api.ts | Frontend cannot reach it; the route is dead weight |
+| Add an api.ts client for a route not in §2.3 | Page 404s silently — users see blank data, no error. This is finding F6 |
+| Leave a message unacknowledged on worker failure | Same job redelivered forever, blocking all new jobs |
+| Write to Redis without a TTL | Unbounded growth — Redis is the only store and nothing evicts it |
 | Set max_tokens=300 for GPT-4V | JSON truncated mid-field — json.loads() throws, job fails silently |
 | Log image bytes or API keys | Security incident and 10MB log entries per image |
 | Rename Dutch defect class labels | Dataset labels no longer match — all model metrics become invalid |
-| Hardcode Stage 2 threshold | Different factory deployments cannot tune their label budget |
+| Name BGAD or Push-Pull as the Stage 2 that runs | Misrepresents the system; neither is wired. This is finding F24 |
 | Use requirements.txt | Two dep files diverge — wrong versions installed silently |
-| Skip cargo check after Rust change | Compilation error only found at docker build time (minutes later) |
-| Mount image volume at different paths in backend vs worker | Worker has image_id but cannot load pixels — inference fails silently |
-| Resize images to >1024px before GPT-4V call | Token cost spikes 4x — OpenAI bill grows unexpectedly |
+| Mount the image volume at different paths in api vs worker | Worker has image_id but cannot load pixels — inference fails silently |
+| Resize images to >1024px before the GPT-4V call | Token cost spikes 4x — OpenAI bill grows unexpectedly |
+| Publish Redis beyond 127.0.0.1 | Unauthenticated-by-default datastore exposed; it holds every image path and label |
 
 ---
 
@@ -625,8 +676,8 @@ Cause-and-effect rules derived from confirmed bugs in the audit.
 **About architecture:** Section 1.1 is the law. Ask: does this change
 preserve the Stage 1 -> Stage 2 flow?
 
-**About schema:** shared/schemas/*.json is ground truth. Not the Rust
-structs. Not the Pydantic models. The JSON files.
+**About schema:** shared/schemas/*.json is ground truth. Not the Pydantic
+models in the worker or the API. Not the TypeScript interfaces. The JSON files.
 
 **About model performance:** Section 6.1 benchmark table is the reference.
 Do not claim a model improvement without AUC numbers.
@@ -667,62 +718,55 @@ This takes 2 minutes and saves 20 minutes of re-orientation next session.
 ## 11. QUICK REFERENCE — KEY FILE LOCATIONS
 
 ```
-BACKEND (Rust)
-backend/src/main.rs                           App startup, router wiring
-backend/src/config.rs                         All env vars with defaults
-backend/src/error.rs                          AppError enum — always use this
-backend/src/routes/health.rs                  DONE — working
-backend/src/routes/auth.rs                    ~85% done
-backend/src/routes/images.rs                  ~60% — queue submission cut off
-backend/src/routes/labels.rs                  ~50% — body unverified
-backend/src/routes/anomaly.rs                 Unknown — not fully read
-backend/src/routes/system.rs                  ~50% — implementation cut off
-backend/src/services/redis.rs                 ~50% — methods cut off
-backend/src/services/image_storage.rs         DONE (O(n) scan known issue)
-backend/src/services/alerts.rs                DONE
-backend/src/db/models.rs                      ~90% — optional fields not populated
-backend/src/db/pool.rs                        85% — raw SQL, not sqlx::migrate!
+API (Python/FastAPI) — the whole backend
+api/main.py                                   All 8 routes (§2.3), Redis key constants
+scripts/run_api.sh                            uvicorn on port 3001
 
 WORKER (Python)
-worker/src/retina_worker/config.py            Settings — missing openai_api_key
-worker/src/retina_worker/schemas.py           Pydantic mirror of Rust models
-worker/src/retina_worker/worker.py            ~50% — run() loop unverified
-worker/src/retina_worker/redis_client.py      DONE
-worker/src/retina_worker/models/base.py       DONE — AnomalyDetector ABC
-worker/src/retina_worker/models/factory.py    DONE — registry (points to stubs)
-worker/src/retina_worker/models/patchcore_stub.py    STUB — hash-based fake
-worker/src/retina_worker/models/winclip_stub.py      STUB — hash-based fake
-worker/src/retina_worker/models/pushpull_stub.py     STUB — hash-based fake
-worker/src/retina_worker/models/patchcore_real.py    MISSING — does not exist
-worker/src/retina_worker/models/gpt4v_detector.py    MISSING — does not exist
+worker/src/retina_worker/main.py              Entry point
+worker/src/retina_worker/config.py            Settings + defaults
+worker/src/retina_worker/schemas.py           Pydantic wire models
+worker/src/retina_worker/worker.py            run() loop, Stage 1/2 routing
+worker/src/retina_worker/redis_client.py      All Redis access, key constants
+worker/src/retina_worker/vlm_router.py        identify / zero_shot / describe / stage2_refine
+worker/src/retina_worker/patchcore_registry.py  2-model LRU checkpoint cache
+worker/src/retina_worker/models/base.py       AnomalyDetector ABC
 
 FRONTEND (Next.js)
 frontend/src/lib/api.ts                       ALL backend calls — central
-frontend/src/app/page.tsx                     Dashboard (~95%)
-frontend/src/app/submit/page.tsx              Upload + predict (~80%)
-frontend/src/app/label/page.tsx               Expert review — BROKEN
-frontend/src/app/results/page.tsx             Exists — not fully read
-frontend/src/app/demo/page.tsx                Exists — not fully read
-frontend/src/app/model-performance/page.tsx   MISSING — does not exist
+frontend/src/app/page.tsx                     Dashboard — /health + /api/labels/pool
+frontend/src/app/submit/page.tsx              Upload + predict
+frontend/src/app/demo/page.tsx                Upload + predict, annotated routing
+frontend/src/app/label/page.tsx               Expert review — the active learning loop
+frontend/src/app/results/page.tsx             Evaluation dashboard (partly dead, see §0.3)
+frontend/src/app/model-performance/page.tsx   Static benchmark reference
 
 SHARED CONTRACTS
 shared/schemas/job.json                       InferenceJob — ground truth
 shared/schemas/result.json                    InferenceResult — ground truth
 shared/schemas/label.json                     Label — ground truth
 
-RESEARCH (not wired into pipeline)
-research/unsupervised/AdaCLIP/                Real CLIP-based VLM — standalone only
-research/unsupervised/AdaCLIP/config_decospan.yaml  ViT-L/14 config used for Decospan run
-research/supervised/BGAD/                     Real BGAD implementation (AUC 0.930)
+DOCS
+docs/DECISIONS.md                             15 architecture decisions with evidence.
+                                              Wins over this file on any disagreement.
+
+RESEARCH (not wired into the pipeline — zero runtime imports)
+research/unsupervised/AdaCLIP/                CLIP-based VLM, standalone only
+research/supervised/BGAD/                     BGAD. NOT the Stage 2 that runs (§6.4)
 research/supervised/Custom_Model_Push_Pull/   Push-Pull contrastive learning
-legacy/fastapi_backend/app.py                 Archived FastAPI backend (has cascade routes)
 
 INFRA
-docker-compose.yml                            Service wiring — port 3001 is backend
+docker-compose.yml                            redis + worker + frontend. No backend, no postgres
 .env                                          Secrets — never commit
+```
+
+DELETED — do not look for these:
+```
+backend/                                      Rust/Axum. Removed in 4ff54ba
+legacy/fastapi_backend/                       Removed in 4ff54ba
 ```
 
 ---
 
-*Last updated: 2026-04-14*
+*Last updated: 2026-09-09 — de-Rusted against the current tree (F5)*
 *Maintainer: dries.vandaele@kuleuven.be / Flanders Make RETINA*

@@ -107,3 +107,7 @@ shared/
 MSVPD_Unified_Dataset/
 decospan_small/
 output/
+
+# Decospan-derived AdaCLIP run output (private customer imagery).
+# Untracked as of the F1 fix; the files remain on disk and in git history.
+research/unsupervised/AdaCLIP/custom_adaclip/results/v21/

@@ -521,7 +521,13 @@ Never hardcode 200 anywhere in the codebase.
 - MVTec AD: Public. Download from mvtec.com/company/research/datasets/mvtec-ad
 - Decospan dataset: Private. KU Leuven HPC:
   /scratch/leuven/369/vsc36963/Vakantiejob/Decospan/Dataset
-  Not in this repo. Must be transferred separately for training.
+  The dataset itself is not in this repo and must be transferred separately
+  for training. Note: 78 Decospan-derived image crops from an AdaCLIP run
+  were previously committed under
+  research/unsupervised/AdaCLIP/custom_adaclip/results/v21/ — they are now
+  untracked and gitignored, but they still exist in the working tree on disk
+  and remain in git history pending a separate decision on whether to purge
+  them with filter-repo.
 - Pre-trained AdaCLIP weights: Expected at weights/pretrained_all.pth
   Not in this repo. AdaCLIP code in Unsupervised_Models/AdaCLIP/ is real
   but not wired into the RETINA pipeline yet.

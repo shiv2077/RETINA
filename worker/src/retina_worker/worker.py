@@ -505,6 +505,24 @@ class Worker:
         self._session_product_class = product_class
         self._session_product_confidence = confidence
 
+    def _clamp_score(self, score: float, source: str) -> float:
+        """Force an anomaly score into [0, 1].
+
+        InferenceResult.anomaly_score is declared ge=0.0 le=1.0, so an
+        out-of-range value fails the whole job on a Pydantic ValidationError.
+        Both producers are unvalidated floats — a PatchCore pred_score and a
+        number GPT-4o wrote into JSON — so the guard lives here, where every
+        result is assembled, rather than at one call site.
+        """
+        if 0.0 <= score <= 1.0:
+            return score
+        if not self._score_clamp_warned:
+            logger.warning(
+                "anomaly_score_out_of_range", raw_score=score, source=source,
+            )
+            self._score_clamp_warned = True
+        return max(0.0, min(1.0, score))
+
     def _run_patchcore(
         self, model, image_bytes: bytes,
     ) -> tuple[float, Optional[np.ndarray]]:
@@ -517,12 +535,7 @@ class Worker:
             batch = batch.cuda()
         with torch.no_grad():
             out = model(batch)
-        score = float(out.pred_score.item())
-        if not (0.0 <= score <= 1.0):
-            if not self._score_clamp_warned:
-                logger.warning("patchcore_score_out_of_range", raw_score=score)
-                self._score_clamp_warned = True
-            score = max(0.0, min(1.0, score))
+        score = self._clamp_score(float(out.pred_score.item()), "patchcore")
         heatmap: Optional[np.ndarray] = None
         if out.anomaly_map is not None:
             heatmap = out.anomaly_map.squeeze().cpu().numpy()
@@ -551,6 +564,7 @@ class Worker:
         stage2_confidence: Optional[float] = None,
     ) -> InferenceResult:
         """Assemble the final InferenceResult. Stage2Output stays None."""
+        anomaly_score = self._clamp_score(anomaly_score, model_used.value)
         # Stage 1 uncertainty: peaks at 0.5, falls to 0 at either extreme.
         uncertainty = 1.0 - abs(2.0 * anomaly_score - 1.0)
         # A Stage 2 verdict is newer evidence about the same image, so damp

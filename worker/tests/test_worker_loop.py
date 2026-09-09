@@ -110,6 +110,28 @@ class TestLabelingPoolGating:
         assert with_stage2.active_learning.uncertainty_score == pytest.approx(0.2)
 
 
+class TestScoreClamping:
+    """F26: GPT-4o writes anomaly_score as a free float, but
+    InferenceResult declares ge=0.0 le=1.0 — an out-of-range value used to
+    fail the whole job on a ValidationError."""
+
+    def _build(self, worker, score, model_used=ModelType.GPT4V):
+        return worker._build_result(
+            job=_job("clamp"), anomaly_score=score, is_anomaly=True,
+            product_class="unknown", product_confidence=None,
+            natural_description=None, defect_type=None, defect_location=None,
+            defect_severity=None, routing_reason="unknown_product_zero_shot",
+            vlm_model_used="gpt-4o", vlm_api_cost_estimate_usd=0.005,
+            heatmap=None, model_used=model_used, t_start=0.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [(1.7, 1.0), (-0.4, 0.0), (0.62, 0.62)]
+    )
+    def test_zero_shot_score_is_clamped(self, worker, raw, expected):
+        assert self._build(worker, raw).anomaly_score == pytest.approx(expected)
+
+
 class TestResultDurability:
     def test_pool_failure_does_not_downgrade_a_completed_result(
         self, worker, monkeypatch

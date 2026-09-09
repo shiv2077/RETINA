@@ -12,7 +12,9 @@ Redis streams. Wire format matches scripts/submit_job.py exactly.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sys
 import time
 import uuid
@@ -20,7 +22,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import redis
+# Async client: every route handler is `async def` and this process runs as a
+# single uvicorn worker, so a blocking Redis call stalls the whole event loop.
+# redis.asyncio re-exports the same exception hierarchy (redis.RedisError).
+import redis.asyncio as redis
 import structlog
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +47,7 @@ from retina_worker.schemas import (  # noqa: E402
 UPLOAD_DIR = REPO_ROOT / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-REDIS_URL = "redis://localhost:6379"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 JOB_QUEUE_STREAM = "retina:jobs:queue"
 RESULT_KEY = "retina:results:{job_id}"
 AL_POOL_KEY = "retina:al:pool"
@@ -87,11 +92,11 @@ async def submit(file: UploadFile = File(...)) -> dict:
     )
     # Record reverse image_id → image_path mapping so /api/images/ can
     # serve the file even after the worker processes the job.
-    redis_client.hset(
+    await redis_client.hset(
         IMAGE_META_KEY.format(image_id=job_id),
         mapping={"image_path": str(dest.resolve())},
     )
-    redis_client.xadd(JOB_QUEUE_STREAM, {"job_data": job.model_dump_json()})
+    await redis_client.xadd(JOB_QUEUE_STREAM, {"job_data": job.model_dump_json()})
     return {"job_id": job_id}
 
 
@@ -103,7 +108,7 @@ async def get_result(job_id: str, wait: int = 30) -> dict:
     key = RESULT_KEY.format(job_id=job_id)
     deadline = time.time() + max(0, min(wait, 60))
     while True:
-        raw = redis_client.hget(key, "result_data")
+        raw = await redis_client.hget(key, "result_data")
         if raw:
             try:
                 return json.loads(raw)
@@ -111,16 +116,18 @@ async def get_result(job_id: str, wait: int = 30) -> dict:
                 raise HTTPException(500, f"corrupt result JSON: {e}") from None
         if time.time() >= deadline:
             raise HTTPException(404, f"no result for job_id={job_id}")
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
 
 # ── GET /api/labels/pool ─────────────────────────────────────────────────
 @app.get("/api/labels/pool")
 async def labels_pool(limit: int = 20) -> dict:
-    items = redis_client.zrevrange(AL_POOL_KEY, 0, max(0, limit - 1), withscores=True)
+    items = await redis_client.zrevrange(
+        AL_POOL_KEY, 0, max(0, limit - 1), withscores=True,
+    )
     pool = []
     for image_id, score in items:
-        sample_json = redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
+        sample_json = await redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
         meta: dict = {}
         if sample_json:
             try:
@@ -130,10 +137,10 @@ async def labels_pool(limit: int = 20) -> dict:
 
         # Enrich with product_class by chasing retina:images → retina:results.
         product_class: Optional[str] = None
-        image_hash = redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
+        image_hash = await redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
         latest_job_id = image_hash.get("latest_job_id") if image_hash else None
         if latest_job_id:
-            result_json = redis_client.hget(
+            result_json = await redis_client.hget(
                 RESULT_KEY.format(job_id=latest_job_id), "result_data",
             )
             if result_json:
@@ -179,11 +186,11 @@ async def labels_submit(body: LabelSubmission) -> dict:
         "notes": body.notes or "",
         "labeled_at": datetime.utcnow().isoformat(),
     }
-    redis_client.hset(key, mapping=hash_fields)
-    redis_client.expire(key, 7 * 24 * 3600)
-    redis_client.zrem(AL_POOL_KEY, body.image_id)
-    redis_client.delete(AL_SAMPLE_KEY.format(image_id=body.image_id))
-    labels_count = redis_client.hincrby(STATS_KEY, LABEL_COUNT_FIELD, 1)
+    await redis_client.hset(key, mapping=hash_fields)
+    await redis_client.expire(key, 7 * 24 * 3600)
+    await redis_client.zrem(AL_POOL_KEY, body.image_id)
+    await redis_client.delete(AL_SAMPLE_KEY.format(image_id=body.image_id))
+    labels_count = await redis_client.hincrby(STATS_KEY, LABEL_COUNT_FIELD, 1)
     return {"ok": True, "labels_count": int(labels_count)}
 
 
@@ -211,7 +218,7 @@ async def get_image(image_id: str):
         return FileResponse(upload_path, media_type="image/png")
 
     # 2. AL sample metadata — retina:al:samples:{id}
-    sample_json = redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
+    sample_json = await redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
     if sample_json:
         try:
             sample = json.loads(sample_json)
@@ -223,7 +230,9 @@ async def get_image(image_id: str):
 
     # 3. Result hash — retina:results:{image_id} (if an InferenceResult
     #    ever carries image_path, pick it up here)
-    result_json = redis_client.hget(RESULT_KEY.format(job_id=image_id), "result_data")
+    result_json = await redis_client.hget(
+        RESULT_KEY.format(job_id=image_id), "result_data",
+    )
     if result_json:
         try:
             result = json.loads(result_json)
@@ -234,7 +243,7 @@ async def get_image(image_id: str):
             pass
 
     # 4. Reverse mapping — retina:images:{image_id}
-    meta = redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
+    meta = await redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
     if meta:
         r = _serve_if_exists(meta.get("image_path", ""), "image_meta", image_id)
         if r:
@@ -243,7 +252,7 @@ async def get_image(image_id: str):
     # 5. Stream scan — last resort. Walk retina:jobs:queue looking for a job
     #    whose image_id matches, then try its image_path.
     try:
-        entries = redis_client.xrange(JOB_QUEUE_STREAM, "-", "+", count=1000)
+        entries = await redis_client.xrange(JOB_QUEUE_STREAM, "-", "+", count=1000)
         for _entry_id, fields in entries:
             try:
                 job = json.loads(fields.get("job_data", "{}"))
@@ -278,7 +287,7 @@ class TaxonomyEntry(BaseModel):
 
 @app.get("/api/taxonomy/{product_class}")
 async def get_taxonomy(product_class: str) -> dict:
-    raw = redis_client.get(TAXONOMY_KEY.format(product_class=product_class))
+    raw = await redis_client.get(TAXONOMY_KEY.format(product_class=product_class))
     if not raw:
         return {"product_class": product_class, "custom": []}
     try:
@@ -293,7 +302,7 @@ async def add_taxonomy_entry(product_class: str, entry: TaxonomyEntry) -> dict:
     # Validate against existing custom entries. (Base-taxonomy uniqueness is
     # enforced client-side since the base set lives in the frontend.)
     key = TAXONOMY_KEY.format(product_class=product_class)
-    raw = redis_client.get(key)
+    raw = await redis_client.get(key)
     existing: list[dict] = []
     if raw:
         try:
@@ -315,14 +324,14 @@ async def add_taxonomy_entry(product_class: str, entry: TaxonomyEntry) -> dict:
     new_entry = entry.model_dump()
     new_entry["custom"] = True
     existing.append(new_entry)
-    redis_client.set(key, json.dumps(existing))
+    await redis_client.set(key, json.dumps(existing))
     return {"product_class": product_class, "custom": existing}
 
 
 @app.get("/health")
 async def health() -> dict:
     try:
-        redis_client.ping()
+        await redis_client.ping()
         return {"status": "ok", "redis": "up"}
     except redis.RedisError as e:
         raise HTTPException(503, f"redis down: {e}") from None

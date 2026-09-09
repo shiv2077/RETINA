@@ -262,7 +262,7 @@ export default function DemoPage() {
             {
               num: '3',
               title: 'Stage 2 Refinement',
-              desc: 'BGAD or Push-Pull refines detection using labeled examples',
+              desc: 'GPT-4o re-checks uncertain scores using operator-labelled examples as few-shot context',
               color: 'bg-state-passSubtle text-state-pass',
             },
           ].map(({ num, title, desc, color }) => (

@@ -166,7 +166,7 @@ export default function DashboardPage() {
         <Card padding="md" className="border-l-2 border-l-kul-accent">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
-              Stage 2 — Supervised
+              Stage 2 — In-context Refiner
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-kul-accent animate-pulse" />
@@ -175,19 +175,18 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-end justify-between mt-3 mb-1">
             <div>
-              <p className="text-lg font-semibold text-text-primary">BGAD</p>
+              <p className="text-lg font-semibold text-text-primary">GPT-4o</p>
               <p className="text-xs text-text-tertiary mt-0.5">
-                Boundary-guided · Push-pull
+                Few-shot from operator labels · no training
               </p>
             </div>
             <Zap className="w-6 h-6 text-kul-accent/40" />
           </div>
           <div className="mt-4">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs text-text-tertiary">AUC</span>
-              <span className="text-xs font-mono text-text-primary">0.930</span>
-            </div>
-            <AnomalyScoreBar score={0.930} size="xs" />
+            <p className="text-xs text-text-tertiary leading-relaxed">
+              Runs on scores in [0.5, 0.9) — confirms or rejects the Stage 1
+              call using up to 5 labelled examples as few-shot context.
+            </p>
           </div>
         </Card>
       </div>

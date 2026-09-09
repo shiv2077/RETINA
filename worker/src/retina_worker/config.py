@@ -6,7 +6,26 @@ Loads configuration from environment variables with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
+import secrets
+import socket
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_consumer_name() -> str:
+    """One consumer identity per worker process.
+
+    ``docker compose up --scale worker=4`` gives every replica its own
+    container hostname, so the hostname alone separates the four consumers
+    in the ``workers`` group. The random suffix only covers the degenerate
+    case where gethostname() is empty or fails.
+    """
+    try:
+        host = socket.gethostname()
+    except OSError:
+        host = ""
+    return host or f"worker-{secrets.token_hex(4)}"
 
 
 class Settings(BaseSettings):
@@ -34,13 +53,15 @@ class Settings(BaseSettings):
     uncertainty_threshold : float
         Minimum uncertainty to add sample to active learning pool.
     consumer_name : str
-        Unique identifier for this worker in the consumer group.
+        Unique identifier for this worker in the consumer group. Defaults to
+        the container hostname; override with WORKER_CONSUMER_NAME.
     """
     
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
     
     # -------------------------------------------------------------------------
@@ -53,7 +74,13 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     worker_concurrency: int = 1
     default_unsupervised_model: str = "patchcore"
-    consumer_name: str = "worker-1"
+    # Consumer identity inside the `workers` group. Must differ per replica
+    # or every replica competes for the same pending-entries list.
+    # Override with WORKER_CONSUMER_NAME.
+    consumer_name: str = Field(
+        default_factory=_default_consumer_name,
+        validation_alias="WORKER_CONSUMER_NAME",
+    )
     
     # -------------------------------------------------------------------------
     # Development/Debug

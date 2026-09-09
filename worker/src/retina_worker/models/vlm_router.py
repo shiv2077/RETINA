@@ -12,7 +12,6 @@ Three responsibilities:
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 import json
 
@@ -20,6 +19,8 @@ import structlog
 from openai import OpenAI
 from PIL import Image
 from pydantic import BaseModel
+
+from ..config import Settings
 
 logger = structlog.get_logger()
 
@@ -64,23 +65,31 @@ class Stage2Verdict(BaseModel):
 class VLMRouter:
     """Orchestrates GPT-4o calls for product routing and defect description."""
 
-    STAGE2_TRIGGER_MIN = 0.5
-    STAGE2_TRIGGER_MAX = 0.9
-
-    def __init__(self, api_key: str | None = None):
-        if not api_key:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        api_key: str | None = None,
+    ):
+        self.settings = settings or Settings()
+        key = api_key or self.settings.openai_api_key
+        if not key:
             raise ValueError(
                 "VLMRouter requires an OpenAI API key. Set OPENAI_API_KEY in "
                 ".env and ensure it's passed through Settings.openai_api_key."
             )
-        self.client = OpenAI(api_key=api_key)
+        # Stage 2 covers the band between "flagged at all" and "PatchCore is
+        # already sure". The lower edge IS the flag threshold — a hardcoded
+        # 0.5 silently skipped Stage 2 for every deployment tuned below it.
+        self.stage2_trigger_min = self.settings.anomaly_threshold
+        self.stage2_trigger_max = self.settings.stage2_trigger_max
+        self.client = OpenAI(api_key=key)
         logger.info(
             "vlm_router_initialized",
             identify_model="gpt-4o-mini",
             describe_model="gpt-4o",
-            key_prefix=api_key[:10] + "...",
+            stage2_band=(self.stage2_trigger_min, self.stage2_trigger_max),
+            key_prefix=key[:10] + "...",
         )
-        self._product_cache: dict[str, ProductIdentification] = {}
 
     @staticmethod
     def _encode_image(image_bytes: bytes, max_side: int = 1024) -> str:
@@ -95,15 +104,7 @@ class VLMRouter:
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    @staticmethod
-    def _image_hash(image_bytes: bytes) -> str:
-        return hashlib.sha256(image_bytes).hexdigest()[:16]
-
     def identify_product(self, image_bytes: bytes) -> ProductIdentification:
-        img_hash = self._image_hash(image_bytes)
-        if img_hash in self._product_cache:
-            return self._product_cache[img_hash]
-
         b64 = self._encode_image(image_bytes)
         known_list = ", ".join(KNOWN_PRODUCT_CATEGORIES)
 
@@ -150,7 +151,6 @@ Respond with JSON:
             data["is_known_category"] = False
 
         result = ProductIdentification(**data)
-        self._product_cache[img_hash] = result
         logger.info(
             "product_identified",
             product=result.product_class,
@@ -235,9 +235,10 @@ Respond with JSON:
 
     def should_run_stage2(self, anomaly_score: float) -> bool:
         """True when the Stage 1 score falls in the uncertainty zone
-        [0.5, 0.9). Above 0.9 PatchCore is confident anomalous; below 0.5
-        it was not flagged. Narrows Stage 2 spend to the hard cases."""
-        return self.STAGE2_TRIGGER_MIN <= anomaly_score < self.STAGE2_TRIGGER_MAX
+        [anomaly_threshold, stage2_trigger_max). Above the upper bound
+        PatchCore is confidently anomalous; below the flag threshold it was
+        never flagged. Narrows Stage 2 spend to the hard cases."""
+        return self.stage2_trigger_min <= anomaly_score < self.stage2_trigger_max
 
     def stage2_refine(
         self,

@@ -73,7 +73,7 @@ def configure_logging(debug: bool = False) -> None:
 def main() -> None:
     """
     Main entry point for the worker.
-    
+
     Initializes logging, loads configuration, and starts the worker loop.
     """
     # Load settings

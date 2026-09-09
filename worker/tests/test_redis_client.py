@@ -14,6 +14,7 @@ from datetime import datetime
 import pytest
 
 from retina_worker.redis_client import (
+    JOB_DLQ_STREAM,
     JOB_QUEUE_STREAM,
     KEY_PREFIX,
     WORKER_GROUP,
@@ -61,6 +62,36 @@ class TestConsumerGroup:
     def test_health_check_true_when_reachable(self, redis_client):
         assert redis_client.health_check() is True
 
+    def test_scaled_out_replicas_register_as_distinct_consumers(
+        self, patched_redis, settings
+    ):
+        """F7: `docker compose up --scale worker=4` must not collide every
+        replica onto one consumer identity."""
+        from retina_worker.redis_client import RedisClient
+
+        a = RedisClient(settings.model_copy(update={"consumer_name": "worker-a"}))
+        b = RedisClient(settings.model_copy(update={"consumer_name": "worker-b"}))
+        _enqueue(a.client, _job("j1"))
+        _enqueue(a.client, _job("j2"))
+        a.read_job(block_ms=1)
+        b.read_job(block_ms=1)
+
+        consumers = a.client.xinfo_consumers(JOB_QUEUE_STREAM, WORKER_GROUP)
+
+        assert sorted(c["name"] for c in consumers) == ["worker-a", "worker-b"]
+
+    def test_consumer_name_defaults_to_the_hostname(self, monkeypatch):
+        from retina_worker.config import Settings
+
+        monkeypatch.setattr("socket.gethostname", lambda: "retina-worker-3")
+        assert Settings().consumer_name == "retina-worker-3"
+
+    def test_consumer_name_env_override(self, monkeypatch):
+        from retina_worker.config import Settings
+
+        monkeypatch.setenv("WORKER_CONSUMER_NAME", "custom-1")
+        assert Settings().consumer_name == "custom-1"
+
 
 class TestReadAndAcknowledge:
     def test_read_job_returns_none_on_empty_stream(self, redis_client):
@@ -106,6 +137,88 @@ class TestReadAndAcknowledge:
         assert second is None
 
 
+class TestPoisonedEntries:
+    """F2: an unparseable entry must not be stranded in the PEL forever."""
+
+    def _pending(self, redis_client) -> int:
+        return redis_client.client.xpending(JOB_QUEUE_STREAM, WORKER_GROUP)["pending"]
+
+    def _dlq(self, redis_client) -> int:
+        return redis_client.client.xlen(JOB_DLQ_STREAM)
+
+    def test_unparseable_json_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"job_data": "{not json at all"})
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_schema_violation_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(
+            JOB_QUEUE_STREAM, {"job_data": json.dumps({"job_id": "x"})}
+        )
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_missing_job_data_field_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"nonsense": "1"})
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_dlq_entry_records_reason_and_timestamp(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"job_data": "{not json"})
+        redis_client.read_job(block_ms=1)
+
+        _entry_id, fields = redis_client.client.xrange(JOB_DLQ_STREAM)[0]
+
+        assert fields["reason"]
+        assert fields["failed_at"]
+        assert fields["job_data"] == "{not json"
+
+
+class TestReclaim:
+    """F2: nothing else in the codebase claims stale pending entries."""
+
+    def _abandon(self, redis_client, settings, job_id="stale"):
+        """Read an entry as another consumer and never acknowledge it."""
+        from retina_worker.redis_client import RedisClient
+
+        other = RedisClient(settings.model_copy(update={"consumer_name": "dead-1"}))
+        _enqueue(other.client, _job(job_id))
+        other.read_job(block_ms=1)
+
+    def test_stale_entry_is_reclaimed_and_returned(self, redis_client, settings):
+        self._abandon(redis_client, settings)
+
+        reclaimed = redis_client.reclaim_stale_jobs(min_idle_ms=0, max_deliveries=5)
+
+        assert [job.job_id for _entry_id, job in reclaimed] == ["stale"]
+
+    def test_fresh_entry_is_left_alone(self, redis_client, settings):
+        self._abandon(redis_client, settings)
+
+        assert redis_client.reclaim_stale_jobs(
+            min_idle_ms=60_000, max_deliveries=5
+        ) == []
+
+    def test_entry_over_the_delivery_cap_is_dead_lettered(
+        self, redis_client, settings
+    ):
+        self._abandon(redis_client, settings)
+
+        reclaimed = redis_client.reclaim_stale_jobs(min_idle_ms=0, max_deliveries=0)
+
+        assert reclaimed == []
+        assert redis_client.client.xlen(JOB_DLQ_STREAM) == 1
+        assert (
+            redis_client.client.xpending(JOB_QUEUE_STREAM, WORKER_GROUP)["pending"] == 0
+        )
+
+
 class TestStoreResult:
     def _result(self, job_id: str = "job1", status=JobStatus.COMPLETED):
         return InferenceResult(
@@ -145,12 +258,14 @@ class TestStoreResult:
 
         assert mapping["latest_job_id"] == "job1"
 
-    def test_job_status_hash_has_no_ttl(self, redis_client):
-        """Documents current behaviour: retina:jobs:* never expires, unlike
-        retina:results:*. Change this test when that leak is fixed."""
+    def test_job_status_hash_expires_with_its_result(self, redis_client):
+        """F18: retina:jobs:* used to live forever while retina:results:*
+        expired after 7 days."""
         redis_client.update_job_status("job1", JobStatus.PROCESSING)
 
-        assert redis_client.client.ttl(f"{KEY_PREFIX}:jobs:job1") == -1
+        ttl = redis_client.client.ttl(f"{KEY_PREFIX}:jobs:job1")
+
+        assert 0 < ttl <= 7 * 24 * 60 * 60
 
 
 class TestLabelingPool:
@@ -185,18 +300,76 @@ class TestLabelingPool:
 
         assert redis_client.client.zcard(f"{KEY_PREFIX}:al:pool") == max_size
 
-    def test_evicted_samples_leak_their_metadata_keys(self, redis_client, settings):
-        """Documents current behaviour: trimming the sorted set does not
-        delete the matching retina:al:samples:* strings."""
+    def test_evicted_samples_take_their_metadata_keys_with_them(
+        self, redis_client, settings
+    ):
+        """F18: trimming the sorted set used to orphan the matching
+        retina:al:samples:* strings, which have no TTL."""
         max_size = settings.al_pool_max_size
         for i in range(max_size + 5):
             redis_client.add_to_labeling_pool(
                 image_id=f"img{i}", anomaly_score=0.5, uncertainty_score=i / 1000
             )
 
-        orphaned = redis_client.client.keys(f"{KEY_PREFIX}:al:samples:*")
+        remaining = redis_client.client.keys(f"{KEY_PREFIX}:al:samples:*")
 
-        assert len(orphaned) == max_size + 5
+        assert len(remaining) == max_size
+        assert f"{KEY_PREFIX}:al:samples:img0" not in remaining
+
+
+class TestRecentLabels:
+    """F25: SCAN has no ordering guarantee, so `label_keys[-20:]` was an
+    arbitrary 20, not the most recent 20."""
+
+    def _label(self, redis_client, image_id, labeled_at, **extra):
+        redis_client.client.hset(
+            f"{KEY_PREFIX}:labels:{image_id}",
+            mapping={
+                "image_id": image_id,
+                "product_class": "wood",
+                "label": "defect",
+                "labeled_at": labeled_at,
+                **extra,
+            },
+        )
+
+    def test_labels_come_back_newest_first(self, redis_client):
+        self._label(redis_client, "old", "2026-01-01T00:00:00")
+        self._label(redis_client, "new", "2026-06-01T00:00:00")
+        self._label(redis_client, "mid", "2026-03-01T00:00:00")
+
+        got = redis_client.recent_labels()
+
+        assert [row["image_id"] for row in got] == ["new", "mid", "old"]
+
+    def test_limit_keeps_the_newest(self, redis_client):
+        for i in range(5):
+            self._label(redis_client, f"l{i}", f"2026-01-0{i + 1}T00:00:00")
+
+        got = redis_client.recent_labels(limit=2)
+
+        assert [row["image_id"] for row in got] == ["l4", "l3"]
+
+    def test_labels_predating_the_index_still_appear(self, redis_client):
+        """A label written without a parseable timestamp must degrade to
+        'oldest', not crash or vanish."""
+        self._label(redis_client, "legacy", "")
+        self._label(redis_client, "fresh", "2026-06-01T00:00:00")
+
+        got = redis_client.recent_labels()
+
+        assert [row["image_id"] for row in got] == ["fresh", "legacy"]
+
+    def test_expired_label_hash_is_dropped_from_the_index(self, redis_client):
+        self._label(redis_client, "gone", "2026-06-01T00:00:00")
+        redis_client.recent_labels()
+        redis_client.client.delete(f"{KEY_PREFIX}:labels:gone")
+
+        assert redis_client.recent_labels() == []
+        assert redis_client.client.zcard(f"{KEY_PREFIX}:labels_index") == 0
+
+    def test_no_labels_yields_an_empty_list(self, redis_client):
+        assert redis_client.recent_labels() == []
 
 
 class TestStats:

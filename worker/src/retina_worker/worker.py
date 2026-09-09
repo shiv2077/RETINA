@@ -43,7 +43,7 @@ import numpy as np
 import structlog
 import torch
 from PIL import Image
-from torchvision.transforms.v2 import functional as TVF
+from torchvision.transforms.v2 import functional as TVF  # noqa: N812 conventional alias
 
 from .config import Settings
 from .models.patchcore_registry import get_default_registry
@@ -77,10 +77,10 @@ SESSION_TTL_S = 3600
 class Worker:
     """
     ML inference worker that processes jobs from Redis.
-    
+
     The worker continuously polls for new jobs and runs anomaly detection
     inference using the appropriate model (Stage 1 or Stage 2).
-    
+
     Attributes
     ----------
     settings : Settings
@@ -94,7 +94,7 @@ class Worker:
     def __init__(self, settings: Settings | None = None):
         """
         Initialize the worker.
-        
+
         Parameters
         ----------
         settings : Optional[Settings]
@@ -106,7 +106,7 @@ class Worker:
 
         # Router + registry — loaded lazily on first inference.
         self.registry = get_default_registry()
-        self.vlm_router = VLMRouter(api_key=self.settings.openai_api_key)
+        self.vlm_router = VLMRouter(settings=self.settings)
         self._session_product_class: str | None = None
         self._session_product_confidence: float | None = None
         self._score_clamp_warned: bool = False
@@ -123,7 +123,7 @@ class Worker:
     def run(self) -> None:
         """
         Start the worker loop.
-        
+
         The worker will continuously poll for jobs until a shutdown
         signal is received or an unrecoverable error occurs.
         """
@@ -154,9 +154,16 @@ class Worker:
     def _process_next_job(self) -> None:
         """
         Process the next job from the queue.
-        
-        Blocks waiting for a job, then processes it.
+
+        First reclaims anything a crashed replica abandoned in the pending
+        entries list, then blocks waiting for a new job.
         """
+        for entry_id, job in self.redis.reclaim_stale_jobs(
+            min_idle_ms=self.settings.job_reclaim_idle_ms,
+            max_deliveries=self.settings.job_max_deliveries,
+        ):
+            self._handle_job(entry_id, job)
+
         # Read next job (blocking)
         job_data = self.redis.read_job(block_ms=5000)
 
@@ -164,8 +171,10 @@ class Worker:
             # No job available, continue polling
             return
 
-        entry_id, job = job_data
+        self._handle_job(*job_data)
 
+    def _handle_job(self, entry_id: str, job: InferenceJob) -> None:
+        """Run one job end to end and acknowledge its stream entry."""
         logger.info(
             "Processing job",
             job_id=job.job_id,
@@ -180,54 +189,76 @@ class Worker:
         start_time = time.time()
 
         try:
-            # Run inference
-            result = self._run_inference(job)
+            try:
+                result = self._run_inference(job)
+                result.processing_time_ms = int((time.time() - start_time) * 1000)
+            except Exception as e:
+                logger.exception("Job failed", job_id=job.job_id, error=str(e))
+                self.redis.store_result(
+                    InferenceResult(
+                        job_id=job.job_id,
+                        image_id=job.image_id,
+                        status=JobStatus.FAILED,
+                        stage=job.stage,
+                        error=InferenceError(
+                            code="INFERENCE_ERROR",
+                            message=str(e),
+                        ),
+                    )
+                )
+                return
 
-            # Calculate processing time
-            processing_time_ms = int((time.time() - start_time) * 1000)
-            result.processing_time_ms = processing_time_ms
-
-            # Store result
+            # The COMPLETED write lands before any bookkeeping and outside the
+            # bookkeeping try: a failing labeling-pool or stats call must not be
+            # able to replace a durable, correct result with a FAILED one.
             self.redis.store_result(result)
 
-            # Add to labeling pool if uncertain
-            if result.active_learning.uncertainty_score > self.settings.uncertainty_threshold:
-                self.redis.add_to_labeling_pool(
-                    image_id=job.image_id,
-                    anomaly_score=result.anomaly_score or 0.0,
-                    uncertainty_score=result.active_learning.uncertainty_score,
+            try:
+                self._record_for_active_learning(job, result)
+                self.redis.increment_completed_jobs()
+            except Exception as e:
+                # Bookkeeping only — the result is already durable, so log and
+                # carry on rather than failing the job.
+                logger.warning(
+                    "post_processing_failed", job_id=job.job_id, error=str(e),
                 )
-
-            # Increment completed counter
-            self.redis.increment_completed_jobs()
 
             logger.info(
                 "Job completed",
                 job_id=job.job_id,
                 anomaly_score=f"{result.anomaly_score:.3f}" if result.anomaly_score else "N/A",
                 is_anomaly=result.is_anomaly,
-                processing_time_ms=processing_time_ms,
+                processing_time_ms=result.processing_time_ms,
             )
-
-        except Exception as e:
-            logger.exception("Job failed", job_id=job.job_id, error=str(e))
-
-            # Store failure result
-            result = InferenceResult(
-                job_id=job.job_id,
-                image_id=job.image_id,
-                status=JobStatus.FAILED,
-                stage=job.stage,
-                error=InferenceError(
-                    code="INFERENCE_ERROR",
-                    message=str(e),
-                ),
-            )
-            self.redis.store_result(result)
 
         finally:
             # Always acknowledge the job
             self.redis.acknowledge_job(entry_id)
+
+    def _record_for_active_learning(
+        self, job: InferenceJob, result: InferenceResult,
+    ) -> None:
+        """Add the sample to the labeling pool when it is uncertain enough."""
+        # A case Stage 2 already resolved confidently is not worth operator
+        # time, whatever Stage 1 thought of it before Stage 2 ran.
+        if (
+            result.stage2_confidence is not None
+            and result.stage2_confidence >= self.settings.stage2_resolved_confidence
+        ):
+            logger.debug(
+                "labeling_pool_skipped",
+                job_id=job.job_id,
+                reason="stage2_resolved",
+                stage2_confidence=result.stage2_confidence,
+            )
+            return
+
+        if result.active_learning.uncertainty_score > self.settings.uncertainty_threshold:
+            self.redis.add_to_labeling_pool(
+                image_id=job.image_id,
+                anomaly_score=result.anomaly_score or 0.0,
+                uncertainty_score=result.active_learning.uncertainty_score,
+            )
 
     def _run_inference(self, job: InferenceJob) -> InferenceResult:
         """
@@ -417,12 +448,8 @@ class Worker:
         few-shot context text to cap per-call cost).
         """
         try:
-            label_keys = list(self.redis.client.scan_iter(match="retina:labels:*"))
             examples: list[dict] = []
-            for key in label_keys[-20:]:
-                data = self.redis.client.hgetall(key)
-                if not data:
-                    continue
+            for data in self.redis.recent_labels(limit=20):
                 if data.get("product_class") == product_class:
                     examples.append({
                         "label": data.get("label", "unknown"),
@@ -476,6 +503,24 @@ class Worker:
         self._session_product_class = product_class
         self._session_product_confidence = confidence
 
+    def _clamp_score(self, score: float, source: str) -> float:
+        """Force an anomaly score into [0, 1].
+
+        InferenceResult.anomaly_score is declared ge=0.0 le=1.0, so an
+        out-of-range value fails the whole job on a Pydantic ValidationError.
+        Both producers are unvalidated floats — a PatchCore pred_score and a
+        number GPT-4o wrote into JSON — so the guard lives here, where every
+        result is assembled, rather than at one call site.
+        """
+        if 0.0 <= score <= 1.0:
+            return score
+        if not self._score_clamp_warned:
+            logger.warning(
+                "anomaly_score_out_of_range", raw_score=score, source=source,
+            )
+            self._score_clamp_warned = True
+        return max(0.0, min(1.0, score))
+
     def _run_patchcore(
         self, model, image_bytes: bytes,
     ) -> tuple[float, np.ndarray | None]:
@@ -488,12 +533,7 @@ class Worker:
             batch = batch.cuda()
         with torch.no_grad():
             out = model(batch)
-        score = float(out.pred_score.item())
-        if not (0.0 <= score <= 1.0):
-            if not self._score_clamp_warned:
-                logger.warning("patchcore_score_out_of_range", raw_score=score)
-                self._score_clamp_warned = True
-            score = max(0.0, min(1.0, score))
+        score = self._clamp_score(float(out.pred_score.item()), "patchcore")
         heatmap: np.ndarray | None = None
         if out.anomaly_map is not None:
             heatmap = out.anomaly_map.squeeze().cpu().numpy()
@@ -522,7 +562,18 @@ class Worker:
         stage2_confidence: float | None = None,
     ) -> InferenceResult:
         """Assemble the final InferenceResult. Stage2Output stays None."""
+        anomaly_score = self._clamp_score(anomaly_score, model_used.value)
+        # Stage 1 uncertainty: peaks at 0.5, falls to 0 at either extreme.
         uncertainty = 1.0 - abs(2.0 * anomaly_score - 1.0)
+        # A Stage 2 verdict is newer evidence about the same image, so damp
+        # the Stage 1 figure by how sure Stage 2 was: a confident verdict
+        # collapses it toward 0, an unsure one leaves it almost untouched.
+        # Rejected: recomputing uncertainty as 1 - stage2_confidence outright.
+        # That throws away the Stage 1 signal, so a hedging Stage 2 verdict on
+        # an image PatchCore scored 0.95 would come back as *high* uncertainty
+        # and flood the labeling pool with cases nobody is unsure about.
+        if stage2_confidence is not None:
+            uncertainty *= 1.0 - stage2_confidence
         confidence = 1.0 - uncertainty
         now = datetime.utcnow()
         cost = vlm_api_cost_estimate_usd if vlm_api_cost_estimate_usd > 0 else None

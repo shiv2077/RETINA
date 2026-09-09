@@ -105,7 +105,7 @@ class InferenceError(BaseModel):
 class InferenceResult(BaseModel):
     """
     Complete inference result to be stored in Redis.
-    
+
     This structure matches the Rust backend's InferenceResult struct.
     """
     job_id: str
@@ -151,8 +151,10 @@ class InferenceResult(BaseModel):
     vlm_model_used: str | None = None    # "gpt-4o" | "gpt-4o-mini"
     vlm_api_cost_estimate_usd: float | None = Field(None, ge=0.0)
 
-    # Stage 2 supervised refiner — populated only when stage1 score is in [0.5, 0.9).
-    stage2_verdict: str | None = None            # confirmed_anomaly | rejected_false_positive | uncertain
+    # Stage 2 supervised refiner — populated only for stage1 scores inside the
+    # configured Stage 2 band (settings.anomaly_threshold..stage2_trigger_max).
+    # verdict: confirmed_anomaly | rejected_false_positive | uncertain
+    stage2_verdict: str | None = None
     stage2_defect_class: str | None = None
     stage2_confidence: float | None = Field(None, ge=0.0, le=1.0)
 

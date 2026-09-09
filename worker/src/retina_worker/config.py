@@ -6,17 +6,36 @@ Loads configuration from environment variables with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
+import secrets
+import socket
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_consumer_name() -> str:
+    """One consumer identity per worker process.
+
+    ``docker compose up --scale worker=4`` gives every replica its own
+    container hostname, so the hostname alone separates the four consumers
+    in the ``workers`` group. The random suffix only covers the degenerate
+    case where gethostname() is empty or fails.
+    """
+    try:
+        host = socket.gethostname()
+    except OSError:
+        host = ""
+    return host or f"worker-{secrets.token_hex(4)}"
 
 
 class Settings(BaseSettings):
     """
     Worker configuration loaded from environment variables.
-    
+
     All settings can be overridden via environment variables.
     The prefix 'RETINA_' is not used to maintain compatibility
     with the docker-compose configuration.
-    
+
     Attributes
     ----------
     redis_url : str
@@ -34,13 +53,15 @@ class Settings(BaseSettings):
     uncertainty_threshold : float
         Minimum uncertainty to add sample to active learning pool.
     consumer_name : str
-        Unique identifier for this worker in the consumer group.
+        Unique identifier for this worker in the consumer group. Defaults to
+        the container hostname; override with WORKER_CONSUMER_NAME.
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # -------------------------------------------------------------------------
@@ -53,7 +74,21 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     worker_concurrency: int = 1
     default_unsupervised_model: str = "patchcore"
-    consumer_name: str = "worker-1"
+    # Consumer identity inside the `workers` group. Must differ per replica
+    # or every replica competes for the same pending-entries list.
+    # Override with WORKER_CONSUMER_NAME.
+    consumer_name: str = Field(
+        default_factory=_default_consumer_name,
+        validation_alias="WORKER_CONSUMER_NAME",
+    )
+
+    # An entry pending longer than this is assumed to belong to a worker that
+    # died mid-job, and is reclaimed by the next XAUTOCLAIM sweep.
+    job_reclaim_idle_ms: int = 300_000
+
+    # After this many deliveries an entry is dead-lettered rather than
+    # reclaimed again — past this point it is poison, not bad luck.
+    job_max_deliveries: int = 3
 
     # -------------------------------------------------------------------------
     # Development/Debug
@@ -67,6 +102,11 @@ class Settings(BaseSettings):
     # Threshold for binary anomaly classification (score > threshold = anomaly)
     anomaly_threshold: float = 0.5
 
+    # Upper edge of the Stage 2 band. Scores at or above this are ones
+    # PatchCore is already confident about, so a VLM call adds nothing.
+    # The lower edge is anomaly_threshold — anything below was never flagged.
+    stage2_trigger_max: float = 0.9
+
     # Minimum uncertainty score to add sample to active learning pool
     # Samples with uncertainty > this value are candidates for labeling
     uncertainty_threshold: float = 0.3
@@ -76,6 +116,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Maximum samples to keep in the labeling pool
     al_pool_max_size: int = 100
+
+    # A Stage 2 verdict at or above this confidence counts as resolved, and
+    # the sample is kept out of the labeling pool entirely.
+    stage2_resolved_confidence: float = 0.8
 
     # -------------------------------------------------------------------------
     # GPT-4V / OpenAI Configuration

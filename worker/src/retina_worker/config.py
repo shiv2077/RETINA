@@ -31,11 +31,11 @@ def _default_consumer_name() -> str:
 class Settings(BaseSettings):
     """
     Worker configuration loaded from environment variables.
-    
+
     All settings can be overridden via environment variables.
     The prefix 'RETINA_' is not used to maintain compatibility
     with the docker-compose configuration.
-    
+
     Attributes
     ----------
     redis_url : str
@@ -56,19 +56,19 @@ class Settings(BaseSettings):
         Unique identifier for this worker in the consumer group. Defaults to
         the container hostname; override with WORKER_CONSUMER_NAME.
     """
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
     )
-    
+
     # -------------------------------------------------------------------------
     # Redis Configuration
     # -------------------------------------------------------------------------
     redis_url: str = "redis://localhost:6379"
-    
+
     # -------------------------------------------------------------------------
     # Worker Configuration
     # -------------------------------------------------------------------------
@@ -81,7 +81,7 @@ class Settings(BaseSettings):
         default_factory=_default_consumer_name,
         validation_alias="WORKER_CONSUMER_NAME",
     )
-    
+
     # An entry pending longer than this is assumed to belong to a worker that
     # died mid-job, and is reclaimed by the next XAUTOCLAIM sweep.
     job_reclaim_idle_ms: int = 300_000
@@ -95,13 +95,13 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     debug_mode: bool = False
     mock_inference_delay_ms: int = 0
-    
+
     # -------------------------------------------------------------------------
     # Model Configuration
     # -------------------------------------------------------------------------
     # Threshold for binary anomaly classification (score > threshold = anomaly)
     anomaly_threshold: float = 0.5
-    
+
     # Upper edge of the Stage 2 band. Scores at or above this are ones
     # PatchCore is already confident about, so a VLM call adds nothing.
     # The lower edge is anomaly_threshold — anything below was never flagged.
@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # Minimum uncertainty score to add sample to active learning pool
     # Samples with uncertainty > this value are candidates for labeling
     uncertainty_threshold: float = 0.3
-    
+
     # -------------------------------------------------------------------------
     # Active Learning Configuration
     # -------------------------------------------------------------------------

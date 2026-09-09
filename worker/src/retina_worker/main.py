@@ -73,15 +73,15 @@ def configure_logging(debug: bool = False) -> None:
 def main() -> None:
     """
     Main entry point for the worker.
-    
+
     Initializes logging, loads configuration, and starts the worker loop.
     """
     # Load settings
     settings = get_settings()
-    
+
     # Configure logging
     configure_logging(debug=settings.debug_mode)
-    
+
     logger = structlog.get_logger()
     logger.info(
         "RETINA ML Worker starting",
@@ -90,10 +90,10 @@ def main() -> None:
         consumer_name=settings.consumer_name,
         debug_mode=settings.debug_mode,
     )
-    
+
     # Create and run worker
     worker = Worker(settings)
-    
+
     try:
         worker.run()
     except KeyboardInterrupt:

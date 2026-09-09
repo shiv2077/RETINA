@@ -40,7 +40,6 @@ The worker interacts with the following Redis keys:
 
 import json
 from datetime import datetime
-from typing import Any
 
 import redis
 import structlog
@@ -86,13 +85,13 @@ def _parse_timestamp(labeled_at: str | None) -> float:
 class RedisClient:
     """
     Redis client wrapper for the ML worker.
-    
+
     Provides methods for:
     - Consuming jobs from the stream
     - Storing inference results
     - Managing the active learning pool
     - Updating system statistics
-    
+
     Attributes
     ----------
     client : redis.Redis
@@ -100,7 +99,7 @@ class RedisClient:
     consumer_name : str
         Unique identifier for this worker in the consumer group
     """
-    
+
     def __init__(self, settings: Settings):
         """
         Initialize Redis client.
@@ -145,11 +144,11 @@ class RedisClient:
                 )
             else:
                 raise
-    
+
     def health_check(self) -> bool:
         """
         Check Redis connectivity.
-        
+
         Returns
         -------
         bool
@@ -159,24 +158,24 @@ class RedisClient:
             return self.client.ping()
         except redis.RedisError:
             return False
-    
+
     # -------------------------------------------------------------------------
     # Job Queue Operations
     # -------------------------------------------------------------------------
-    
+
     def read_job(self, block_ms: int = 5000) -> tuple[str, InferenceJob] | None:
         """
         Read the next job from the queue.
-        
+
         Uses XREADGROUP for consumer group semantics:
         - Jobs are distributed among workers
         - Jobs must be acknowledged after processing
-        
+
         Parameters
         ----------
         block_ms : int
             Milliseconds to block waiting for new jobs
-            
+
         Returns
         -------
         tuple[str, InferenceJob] | None
@@ -321,15 +320,15 @@ class RedisClient:
     def acknowledge_job(self, entry_id: str) -> bool:
         """
         Acknowledge that a job has been processed.
-        
+
         This removes the job from the pending entries list,
         ensuring it won't be redelivered.
-        
+
         Parameters
         ----------
         entry_id : str
             Stream entry ID to acknowledge
-            
+
         Returns
         -------
         bool
@@ -342,11 +341,11 @@ class RedisClient:
         except redis.RedisError as e:
             logger.error("Failed to acknowledge job", entry_id=entry_id, error=str(e))
             return False
-    
+
     def update_job_status(self, job_id: str, status: JobStatus) -> None:
         """
         Update job status in the metadata hash.
-        
+
         Parameters
         ----------
         job_id : str
@@ -357,15 +356,15 @@ class RedisClient:
         key = f"{KEY_PREFIX}:jobs:{job_id}"
         self.client.hset(key, "status", status.value)
         self.client.expire(key, JOB_TTL_S)
-    
+
     # -------------------------------------------------------------------------
     # Result Operations
     # -------------------------------------------------------------------------
-    
+
     def store_result(self, result: InferenceResult) -> None:
         """
         Store inference result in Redis.
-        
+
         Parameters
         ----------
         result : InferenceResult
@@ -373,30 +372,30 @@ class RedisClient:
         """
         key = f"{KEY_PREFIX}:results:{result.job_id}"
         result_json = result.model_dump_json()
-        
+
         # Store in hash
         self.client.hset(key, "result_data", result_json)
-        
+
         # Set TTL (7 days)
         self.client.expire(key, JOB_TTL_S)
-        
+
         # Also update the image -> job mapping
         image_key = f"{KEY_PREFIX}:images:{result.image_id}"
         self.client.hset(image_key, "latest_job_id", result.job_id)
-        
+
         # Update job status
         self.update_job_status(result.job_id, result.status)
-        
+
         logger.debug(
             "Stored inference result",
             job_id=result.job_id,
             status=result.status.value,
         )
-    
+
     # -------------------------------------------------------------------------
     # Active Learning Operations
     # -------------------------------------------------------------------------
-    
+
     def add_to_labeling_pool(
         self,
         image_id: str,
@@ -405,10 +404,10 @@ class RedisClient:
     ) -> None:
         """
         Add a sample to the active learning labeling pool.
-        
+
         Samples are stored in a sorted set, scored by uncertainty.
         This allows efficient retrieval of the most uncertain samples.
-        
+
         Parameters
         ----------
         image_id : str
@@ -420,7 +419,7 @@ class RedisClient:
         """
         pool_key = f"{KEY_PREFIX}:al:pool"
         sample_key = f"{KEY_PREFIX}:al:samples:{image_id}"
-        
+
         # Create sample metadata
         sample = UnlabeledSample(
             image_id=image_id,
@@ -428,13 +427,13 @@ class RedisClient:
             uncertainty_score=uncertainty_score,
             added_at=datetime.utcnow(),
         )
-        
+
         # Add to sorted set (score = uncertainty)
         self.client.zadd(pool_key, {image_id: uncertainty_score})
-        
+
         # Store sample metadata
         self.client.set(sample_key, sample.model_dump_json())
-        
+
         # Trim pool to max size (keep highest uncertainty)
         pool_size = self.client.zcard(pool_key)
         max_size = self.settings.al_pool_max_size
@@ -449,13 +448,13 @@ class RedisClient:
                 self.client.delete(
                     *(f"{KEY_PREFIX}:al:samples:{i}" for i in evicted)
                 )
-        
+
         logger.debug(
             "Added sample to labeling pool",
             image_id=image_id,
             uncertainty=f"{uncertainty_score:.3f}",
         )
-    
+
     # -------------------------------------------------------------------------
     # Label Operations
     # -------------------------------------------------------------------------
@@ -510,11 +509,11 @@ class RedisClient:
     # -------------------------------------------------------------------------
     # Statistics Operations
     # -------------------------------------------------------------------------
-    
+
     def increment_completed_jobs(self) -> int:
         """
         Increment the completed jobs counter.
-        
+
         Returns
         -------
         int
@@ -526,37 +525,37 @@ class RedisClient:
     # -------------------------------------------------------------------------
     # Alert Operations (Matching Professor's Framework)
     # -------------------------------------------------------------------------
-    
+
     def send_alert(self, alert: dict) -> None:
         """
         Send a real-time alert for detected anomaly.
-        
+
         Uses LPUSH to Redis list for real-time notification.
         Matches professor's framework alert pattern.
-        
+
         Parameters
         ----------
         alert : dict
             Alert data containing job_id, user, label, timestamp
         """
         alerts_key = f"{KEY_PREFIX}:alerts"
-        
+
         self.client.lpush(alerts_key, json.dumps(alert))
-        
+
         # Trim to keep only last 100 alerts
         self.client.ltrim(alerts_key, 0, 99)
-        
+
         logger.info("Alert sent", job_id=alert.get("job_id"))
-    
+
     def get_result(self, job_id: str) -> dict | None:
         """
         Get stored result for a job.
-        
+
         Parameters
         ----------
         job_id : str
             Job identifier
-            
+
         Returns
         -------
         dict | None
@@ -564,11 +563,11 @@ class RedisClient:
         """
         key = f"{KEY_PREFIX}:results:{job_id}"
         result_json = self.client.hget(key, "result_data")
-        
+
         if result_json:
             return json.loads(result_json)
         return None
-    
+
     def update_result_unsupervised(
         self,
         job_id: str,
@@ -577,10 +576,10 @@ class RedisClient:
     ) -> None:
         """
         Update result with unsupervised model output.
-        
+
         Matches professor's framework pattern where unsupervised
         model runs in batch and updates existing records.
-        
+
         Parameters
         ----------
         job_id : str
@@ -591,21 +590,21 @@ class RedisClient:
             Whether supervised and unsupervised disagree
         """
         key = f"{KEY_PREFIX}:results:{job_id}"
-        
+
         # Get existing result
         result_json = self.client.hget(key, "result_data")
         if not result_json:
             logger.warning("Result not found for unsupervised update", job_id=job_id)
             return
-        
+
         # Update result
         result = json.loads(result_json)
         result["unsupervised_label"] = unsupervised_label
         result["mismatch"] = mismatch
-        
+
         # Store updated result
         self.client.hset(key, "result_data", json.dumps(result))
-        
+
         logger.debug(
             "Updated result with unsupervised",
             job_id=job_id,

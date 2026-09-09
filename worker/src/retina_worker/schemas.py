@@ -8,7 +8,6 @@ These match the JSON schemas in /shared/schemas/ and the Rust backend models.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -50,9 +49,9 @@ class JobStatus(str, Enum):
 
 class JobMetadata(BaseModel):
     """Optional metadata for job tracking."""
-    source: Optional[str] = None
-    batch_id: Optional[str] = None
-    callback_url: Optional[str] = None
+    source: str | None = None
+    batch_id: str | None = None
+    callback_url: str | None = None
 
 
 class InferenceJob(BaseModel):
@@ -72,22 +71,22 @@ class InferenceJob(BaseModel):
     metadata: JobMetadata = Field(default_factory=JobMetadata)
     # Path to the saved image file on the shared Docker volume.
     # Set by the backend after uploading; enables workers to load pixel data.
-    image_path: Optional[str] = Field(None, description="Absolute path to image on shared volume")
+    image_path: str | None = Field(None, description="Absolute path to image on shared volume")
 
 
 class Stage1Output(BaseModel):
     """Stage 1 (unsupervised) specific outputs."""
     heatmap_available: bool = False
-    heatmap_key: Optional[str] = None
-    feature_distance: Optional[float] = None
-    clip_similarity: Optional[float] = None
+    heatmap_key: str | None = None
+    feature_distance: float | None = None
+    clip_similarity: float | None = None
 
 
 class Stage2Output(BaseModel):
     """Stage 2 (supervised) specific outputs."""
-    defect_category: Optional[str] = None
-    category_probabilities: Optional[dict[str, float]] = None
-    embedding_distance: Optional[float] = None
+    defect_category: str | None = None
+    category_probabilities: dict[str, float] | None = None
+    embedding_distance: float | None = None
 
 
 class ActiveLearningMeta(BaseModel):
@@ -106,56 +105,58 @@ class InferenceError(BaseModel):
 class InferenceResult(BaseModel):
     """
     Complete inference result to be stored in Redis.
-    
+
     This structure matches the Rust backend's InferenceResult struct.
     """
     job_id: str
     image_id: str
     status: JobStatus = JobStatus.COMPLETED
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    completed_at: Optional[datetime] = None
-    model_used: Optional[ModelType] = None
+    completed_at: datetime | None = None
+    model_used: ModelType | None = None
     stage: PipelineStage = PipelineStage.UNSUPERVISED
-    
+
     # Core prediction outputs
-    anomaly_score: Optional[float] = Field(None, ge=0.0, le=1.0)
-    is_anomaly: Optional[bool] = None
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    
+    anomaly_score: float | None = Field(None, ge=0.0, le=1.0)
+    is_anomaly: bool | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+
     # Stage-specific outputs
-    stage1_output: Optional[Stage1Output] = None
-    stage2_output: Optional[Stage2Output] = None
-    
+    stage1_output: Stage1Output | None = None
+    stage2_output: Stage2Output | None = None
+
     # Active learning metadata
     active_learning: ActiveLearningMeta = Field(default_factory=ActiveLearningMeta)
-    
+
     # Error handling
-    error: Optional[InferenceError] = None
+    error: InferenceError | None = None
 
     # Performance metrics
-    processing_time_ms: Optional[int] = None
+    processing_time_ms: int | None = None
 
     # ── VLM / router outputs (top-level) ───────────────────────────────────
     # Legacy GPT-4V fields (now populated by the VLM router as well; kept
     # for backward compatibility with existing records).
-    defect_description: Optional[str] = None
-    defect_location: Optional[str] = None
-    gpt4v_reasoning: Optional[str] = None
+    defect_description: str | None = None
+    defect_location: str | None = None
+    gpt4v_reasoning: str | None = None
 
     # New VLM-router fields — see docs/vlm_router_design.md for usage.
-    product_class: Optional[str] = None
-    product_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    natural_description: Optional[str] = None
-    defect_severity: Optional[str] = None   # "minor" | "moderate" | "severe"
-    defect_type: Optional[str] = None
-    routing_reason: Optional[str] = None    # see routing_reason enum in result.json
-    vlm_model_used: Optional[str] = None    # "gpt-4o" | "gpt-4o-mini"
-    vlm_api_cost_estimate_usd: Optional[float] = Field(None, ge=0.0)
+    product_class: str | None = None
+    product_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    natural_description: str | None = None
+    defect_severity: str | None = None   # "minor" | "moderate" | "severe"
+    defect_type: str | None = None
+    routing_reason: str | None = None    # see routing_reason enum in result.json
+    vlm_model_used: str | None = None    # "gpt-4o" | "gpt-4o-mini"
+    vlm_api_cost_estimate_usd: float | None = Field(None, ge=0.0)
 
-    # Stage 2 supervised refiner — populated only when stage1 score is in [0.5, 0.9).
-    stage2_verdict: Optional[str] = None            # confirmed_anomaly | rejected_false_positive | uncertain
-    stage2_defect_class: Optional[str] = None
-    stage2_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # Stage 2 supervised refiner — populated only for stage1 scores inside the
+    # configured Stage 2 band (settings.anomaly_threshold..stage2_trigger_max).
+    # verdict: confirmed_anomaly | rejected_false_positive | uncertain
+    stage2_verdict: str | None = None
+    stage2_defect_class: str | None = None
+    stage2_confidence: float | None = Field(None, ge=0.0, le=1.0)
 
 
 class UnlabeledSample(BaseModel):

@@ -258,12 +258,14 @@ class TestStoreResult:
 
         assert mapping["latest_job_id"] == "job1"
 
-    def test_job_status_hash_has_no_ttl(self, redis_client):
-        """Documents current behaviour: retina:jobs:* never expires, unlike
-        retina:results:*. Change this test when that leak is fixed."""
+    def test_job_status_hash_expires_with_its_result(self, redis_client):
+        """F18: retina:jobs:* used to live forever while retina:results:*
+        expired after 7 days."""
         redis_client.update_job_status("job1", JobStatus.PROCESSING)
 
-        assert redis_client.client.ttl(f"{KEY_PREFIX}:jobs:job1") == -1
+        ttl = redis_client.client.ttl(f"{KEY_PREFIX}:jobs:job1")
+
+        assert 0 < ttl <= 7 * 24 * 60 * 60
 
 
 class TestLabelingPool:
@@ -298,18 +300,21 @@ class TestLabelingPool:
 
         assert redis_client.client.zcard(f"{KEY_PREFIX}:al:pool") == max_size
 
-    def test_evicted_samples_leak_their_metadata_keys(self, redis_client, settings):
-        """Documents current behaviour: trimming the sorted set does not
-        delete the matching retina:al:samples:* strings."""
+    def test_evicted_samples_take_their_metadata_keys_with_them(
+        self, redis_client, settings
+    ):
+        """F18: trimming the sorted set used to orphan the matching
+        retina:al:samples:* strings, which have no TTL."""
         max_size = settings.al_pool_max_size
         for i in range(max_size + 5):
             redis_client.add_to_labeling_pool(
                 image_id=f"img{i}", anomaly_score=0.5, uncertainty_score=i / 1000
             )
 
-        orphaned = redis_client.client.keys(f"{KEY_PREFIX}:al:samples:*")
+        remaining = redis_client.client.keys(f"{KEY_PREFIX}:al:samples:*")
 
-        assert len(orphaned) == max_size + 5
+        assert len(remaining) == max_size
+        assert f"{KEY_PREFIX}:al:samples:img0" not in remaining
 
 
 class TestStats:

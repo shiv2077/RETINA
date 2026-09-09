@@ -56,6 +56,11 @@ JOB_QUEUE_STREAM = f"{KEY_PREFIX}:jobs:queue"
 JOB_DLQ_STREAM = f"{KEY_PREFIX}:jobs:dlq"
 WORKER_GROUP = "workers"
 
+# Retention for per-job keys (results and job status hashes). Both describe
+# the same job, so they expire together — otherwise retina:jobs:* accumulates
+# one hash per job forever.
+JOB_TTL_S = 7 * 24 * 60 * 60
+
 
 class RedisClient:
     """
@@ -330,6 +335,7 @@ class RedisClient:
         """
         key = f"{KEY_PREFIX}:jobs:{job_id}"
         self.client.hset(key, "status", status.value)
+        self.client.expire(key, JOB_TTL_S)
     
     # -------------------------------------------------------------------------
     # Result Operations
@@ -351,7 +357,7 @@ class RedisClient:
         self.client.hset(key, "result_data", result_json)
         
         # Set TTL (7 days)
-        self.client.expire(key, 7 * 24 * 60 * 60)
+        self.client.expire(key, JOB_TTL_S)
         
         # Also update the image -> job mapping
         image_key = f"{KEY_PREFIX}:images:{result.image_id}"
@@ -412,8 +418,16 @@ class RedisClient:
         pool_size = self.client.zcard(pool_key)
         max_size = self.settings.al_pool_max_size
         if pool_size > max_size:
-            # Remove lowest uncertainty samples
-            self.client.zremrangebyrank(pool_key, 0, pool_size - max_size - 1)
+            # Remove lowest uncertainty samples, and their metadata with them:
+            # dropping the sorted-set member alone orphans the matching
+            # retina:al:samples:* string, which then has no TTL and no owner.
+            last_rank = pool_size - max_size - 1
+            evicted = self.client.zrange(pool_key, 0, last_rank)
+            self.client.zremrangebyrank(pool_key, 0, last_rank)
+            if evicted:
+                self.client.delete(
+                    *(f"{KEY_PREFIX}:al:samples:{i}" for i in evicted)
+                )
         
         logger.debug(
             "Added sample to labeling pool",

@@ -161,3 +161,14 @@
 **Consequences:** A mid-band image Stage 2 confirms as genuine still costs two GPT-4o calls — that pairing was never the problem. The saving only applies to images Stage 2 rejects; those no longer pay for a description of a non-defect.
 **Revisit when:** cost tracking shows the post-Stage-2 describe_defect call is still a material share of spend on confirmed mid-band defects — at that point, have Stage 2 produce the operator-facing description directly instead of a second call.
 **Evidence:** worker.py (`_run_inference` steps 3-4, `_describe_defect` helper).
+
+## 16. Redis requires a password, and the ports are loopback-only.
+**Status:** Implemented
+**Context:** Redis and Postgres published their ports on all interfaces with no password. Anything on the host — and on the LAN if the host firewall allowed it — could read or write every job, result and label with raw Redis commands, bypassing the API entirely. Entry 13 covers the deliberate absence of API auth; this is a different hole, and one nothing had decided on.
+**Decision:** Both port mappings bind to `127.0.0.1`. `redis-server` starts with `--requirepass` sourced from `REDIS_PASSWORD`, using compose's `${VAR:?err}` form so a missing password fails the stack loudly instead of silently starting an unauthenticated Redis. Every connection string carries the credential; `api/main.py` reads `REDIS_URL` from the environment rather than hardcoding `redis://localhost:6379`.
+**Alternatives rejected:**
+- *Leave it, since it is a single-operator demo* — the same reasoning as entry 13, but the blast radius is different: no-API-auth exposes an API with a known shape, whereas an open Redis exposes the queue and every stored label to anything that can open a socket.
+- *Bind to loopback without a password* — protects against the LAN but not against any other process or container on the same host, and provides nothing if the port is ever republished.
+**Consequences:** Adding auth silently broke two healthchecks, which is the part worth remembering. The Redis healthcheck was `redis-cli ping`, which returns `NOAUTH Authentication required` once a password exists, and the worker's healthcheck dialled a hardcoded `redis://redis:6379` with no credential. Both would have reported the stack unhealthy for a reason unrelated to the change's intent. The healthcheck now authenticates via `REDISCLI_AUTH` (keeping the secret off the process command line) and the worker's reads its own `REDIS_URL`. A security change's blast radius extends to everything that was quietly relying on the absence of that security.
+**Revisit when:** the deployment gains a second service that needs Redis — at that point per-service ACL users are worth more than one shared password.
+**Evidence:** docker-compose.yml (redis `command`, `REDISCLI_AUTH`, both `ports` blocks, worker `healthcheck`); api/main.py (`REDIS_URL` from `os.getenv`); .env.example (`REDIS_PASSWORD`).

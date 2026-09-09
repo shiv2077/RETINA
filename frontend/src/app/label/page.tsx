@@ -52,7 +52,7 @@ interface Polygon {
   color: string;
 }
 
-interface Sample extends api.CascadeQueueItem {
+interface Sample {
   image_id: string;
   image_path: string;
   anomaly_score?: number;
@@ -60,7 +60,8 @@ interface Sample extends api.CascadeQueueItem {
   heatmap_base64?: string;
   bgad_score: number;
   vlm_score?: number;
-  routing_case: api.CascadeRoutingCase;
+  /** Worker routing_reason, e.g. "patchcore_confirmed_anomaly". */
+  routing_case: string;
   created_at: string;
   metadata?: Record<string, unknown>;
   product_class?: string | null;

@@ -1,15 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import {
-  Activity,
-  GitBranch,
-  AlertTriangle,
-  Tag,
-  Cpu,
-  Zap,
-} from 'lucide-react';
-import { getHealth, getSystemStatus, type SystemStatusResponse } from '@/lib/api';
+import { Activity, GitBranch, Tag, Cpu, Zap } from 'lucide-react';
+import { getHealth, getLabelPoolV2, type PoolItem } from '@/lib/api';
 import GlassCard from '@/components/GlassCard';
 import Card from '@/components/Card';
 import StatusCard from '@/components/StatusCard';
@@ -19,34 +12,25 @@ import Badge from '@/components/Badge';
 import ErrorBanner from '@/components/ErrorBanner';
 import LoadingSkeleton from '@/components/LoadingSkeleton';
 
-interface AlertEntry {
-  image_id: string;
-  anomaly_score: number;
-  is_anomaly: boolean;
-  timestamp: string;
-  model_used?: string;
-}
-
 export default function DashboardPage() {
-  const [status, setStatus] = useState<SystemStatusResponse | null>(null);
   const [isHealthy, setIsHealthy] = useState(false);
-  const [alerts, setAlerts] = useState<AlertEntry[]>([]);
+  const [pool, setPool] = useState<PoolItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [health, sys] = await Promise.all([
+      const [health, poolRes] = await Promise.all([
         getHealth().catch(() => null),
-        getSystemStatus().catch(() => null),
+        getLabelPoolV2(10).catch(() => null),
       ]);
-      setIsHealthy(health?.status === 'healthy');
-      if (sys) setStatus(sys);
+      setIsHealthy(health?.status === 'ok');
+      setPool(poolRes?.pool ?? []);
       setLastUpdated(new Date());
       setError(null);
     } catch {
-      setError('Unable to reach backend. Is the server running on port 3001?');
+      setError('Unable to reach backend. Is the API running on port 3001?');
     } finally {
       setLoading(false);
     }
@@ -57,19 +41,6 @@ export default function DashboardPage() {
     const id = setInterval(fetchData, 10_000);
     return () => clearInterval(id);
   }, [fetchData]);
-
-  const stage = status?.current_stage ?? 1;
-  const stage2Available = status?.stage2_available ?? false;
-  const labelsCollected = status?.stats?.labels_collected ?? 0;
-  const labelsForStage2 = status?.labels_for_stage2 ?? 100;
-  const stage2Progress = status?.stage2_progress ?? 0;
-  const queueLength = status?.stats?.queue_length ?? 0;
-  const jobsCompleted = status?.stats?.jobs_completed ?? 0;
-  const stage1Model = status?.active_models?.stage1_model ?? 'PatchCore';
-
-  const progressPct = labelsForStage2 > 0
-    ? Math.min((labelsCollected / labelsForStage2) * 100, 100)
-    : 0;
 
   return (
     <div>
@@ -82,8 +53,8 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Badge color={stage2Available ? 'kul' : 'pass'} dot>
-            Stage {stage} Active
+          <Badge color={isHealthy ? 'pass' : 'alert'} dot>
+            {isHealthy ? 'Backend Online' : 'Backend Offline'}
           </Badge>
           {lastUpdated && (
             <span className="text-text-tertiary text-xs">
@@ -99,139 +70,68 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      {/* Stat cards — sourced from GET /health and GET /api/labels/pool */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
         <StatusCard
           title="Pipeline Status"
-          value={isHealthy ? (stage2Available ? 'Stage 2' : 'Stage 1') : 'Offline'}
-          subtitle={isHealthy ? (stage2Available ? 'Supervised active' : 'Unsupervised') : 'Backend unreachable'}
+          value={isHealthy ? 'Online' : 'Offline'}
+          subtitle={isHealthy ? 'API and Redis reachable' : 'API unreachable'}
           icon={GitBranch}
-          color="kul"
+          color={isHealthy ? 'kul' : 'default'}
           loading={loading}
         />
         <StatusCard
-          title="Images Processed"
-          value={jobsCompleted}
-          subtitle="Total inference jobs"
-          icon={Activity}
-          loading={loading}
-        />
-        <StatusCard
-          title="Queue Length"
-          value={queueLength}
-          subtitle="Pending inference jobs"
-          icon={AlertTriangle}
-          color={queueLength > 10 ? 'warn' : 'default'}
-          loading={loading}
-        />
-        <StatusCard
-          title="Labels Collected"
-          value={`${labelsCollected} / ${labelsForStage2}`}
-          subtitle={`${Math.round(stage2Progress)}% to Stage 2`}
+          title="Awaiting Review"
+          value={pool.length}
+          subtitle="Images in the active learning pool"
           icon={Tag}
           color="pass"
           loading={loading}
         />
       </div>
 
-      {/* Live feed + Active learning */}
-      <div className="grid grid-cols-3 gap-6 mb-8">
-
-        {/* Live alerts feed */}
-        <GlassCard padding="md" className="col-span-2">
-          <SectionHeader
-            title="Live Anomaly Feed"
-            action={
-              <span className="flex items-center gap-1.5 text-xs text-state-pass">
-                <span className="w-1.5 h-1.5 rounded-full bg-state-pass animate-pulse" />
-                Live
-              </span>
-            }
-          />
-          {loading ? (
-            <LoadingSkeleton lines={4} heights={['h-10', 'h-10', 'h-10', 'h-10']} />
-          ) : alerts.length === 0 ? (
-            <div className="flex flex-col items-center py-12 text-center">
-              <Activity className="w-8 h-8 text-surface-border mb-3" />
-              <p className="text-text-tertiary text-sm">No anomalies detected</p>
-              <p className="text-text-disabled text-xs mt-1">
-                Waiting for inference results...
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-y-auto max-h-80 -mx-2">
-              {alerts.map((alert, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 py-2.5 px-2 border-b border-surface-border last:border-0"
-                >
-                  <div className="w-10 h-10 rounded-lg bg-surface-overlay flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-text-primary truncate font-mono">
-                      {alert.image_id}
-                    </p>
-                    <p className="text-xs text-text-tertiary">
-                      {new Date(alert.timestamp).toLocaleTimeString()}
-                    </p>
-                  </div>
-                  <AnomalyScoreBar
-                    score={alert.anomaly_score}
-                    size="sm"
-                    showValue
-                    className="w-24"
-                  />
-                  <Badge color={alert.is_anomaly ? 'alert' : 'pass'}>
-                    {alert.is_anomaly ? 'Anomaly' : 'Normal'}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          )}
-        </GlassCard>
-
-        {/* Active learning progress */}
-        <GlassCard padding="md" className="col-span-1">
-          <SectionHeader title="Active Learning" />
-
-          <div className="text-center mb-4">
-            <p className="font-mono text-3xl font-semibold text-text-primary tabular-nums">
-              {loading ? '—' : labelsCollected}
+      {/* Active learning pool — GET /api/labels/pool */}
+      <GlassCard padding="md" className="mb-8">
+        <SectionHeader
+          title="Awaiting Expert Review"
+          subtitle="Highest-uncertainty images queued for labelling"
+        />
+        {loading ? (
+          <LoadingSkeleton lines={4} heights={['h-10', 'h-10', 'h-10', 'h-10']} />
+        ) : pool.length === 0 ? (
+          <div className="flex flex-col items-center py-12 text-center">
+            <Activity className="w-8 h-8 text-surface-border mb-3" />
+            <p className="text-text-tertiary text-sm">Review queue is empty</p>
+            <p className="text-text-disabled text-xs mt-1">
+              Submit images to populate the active learning pool
             </p>
-            <p className="text-xs text-text-tertiary mt-1">labels collected</p>
           </div>
-
-          <div className="space-y-1 mb-1">
-            <div className="w-full h-1 bg-surface-overlay rounded-full overflow-hidden">
+        ) : (
+          <div className="overflow-y-auto max-h-80 -mx-2">
+            {pool.map(item => (
               <div
-                className="h-full bg-kul-accent rounded-full transition-all duration-500"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
+                key={item.image_id}
+                className="flex items-center gap-3 py-2.5 px-2 border-b border-surface-border last:border-0"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-text-primary truncate font-mono">
+                    {item.image_id}
+                  </p>
+                  <p className="text-xs text-text-tertiary">
+                    {item.product_class ?? 'unidentified product'}
+                  </p>
+                </div>
+                <AnomalyScoreBar
+                  score={item.anomaly_score ?? item.score}
+                  size="sm"
+                  showValue
+                  className="w-24"
+                />
+              </div>
+            ))}
           </div>
-          <p className="text-xs text-text-tertiary text-center mb-6">
-            Stage 2 activates at {labelsForStage2} labels
-          </p>
-
-          <div className="border-t border-surface-border pt-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-text-primary">{stage1Model}</span>
-              <Badge color="pass">Active</Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className={['text-sm', stage2Available ? 'text-text-primary' : 'text-text-tertiary'].join(' ')}>
-                BGAD
-              </span>
-              <Badge color={stage2Available ? 'kul' : 'default'}>
-                {stage2Available ? 'Active' : 'Pending'}
-              </Badge>
-            </div>
-          </div>
-
-          <p className="text-xs text-text-disabled text-center mt-4">
-            Expert labels unlock supervised detection
-          </p>
-        </GlassCard>
-      </div>
+        )}
+      </GlassCard>
 
       {/* Model cards */}
       <div className="grid grid-cols-2 gap-4">
@@ -263,25 +163,15 @@ export default function DashboardPage() {
         </Card>
 
         {/* Stage 2 */}
-        <Card
-          padding="md"
-          className={[
-            'border-l-2',
-            stage2Available ? 'border-l-kul-accent' : 'border-l-surface-border opacity-60',
-          ].join(' ')}
-        >
+        <Card padding="md" className="border-l-2 border-l-kul-accent">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
               Stage 2 — Supervised
             </span>
-            {stage2Available ? (
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-kul-accent animate-pulse" />
-                <span className="text-kul-accent text-xs">Active</span>
-              </span>
-            ) : (
-              <Badge color="default">Pending</Badge>
-            )}
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-kul-accent animate-pulse" />
+              <span className="text-kul-accent text-xs">Active</span>
+            </span>
           </div>
           <div className="flex items-end justify-between mt-3 mb-1">
             <div>

@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { BarChart2, Target, Cpu, Zap, Brain } from 'lucide-react';
-import { getSystemStatus, type SystemStatusResponse } from '@/lib/api';
 import Card from '@/components/Card';
 import GlassCard from '@/components/GlassCard';
 import StatusCard from '@/components/StatusCard';
@@ -31,27 +30,12 @@ const MVTEC_BENCHMARKS = [
 ];
 
 export default function ResultsPage() {
-  const [status, setStatus] = useState<SystemStatusResponse | null>(null);
   const [evaluations, setEvaluations] = useState<Record<string, EvaluationResult>>({});
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [loading, setLoading] = useState(true);
+  const [loading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const sys = await getSystemStatus().catch(() => null);
-        if (sys) setStatus(sys);
-      } catch {
-        setError('Backend unreachable — model status unavailable.');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, []);
 
   const aggregateMetrics = Object.values(evaluations);
   const meanAUROC = aggregateMetrics.length > 0
@@ -104,18 +88,16 @@ export default function ResultsPage() {
         />
         <StatusCard
           title="Stage 1 Model"
-          value={status?.active_models?.stage1_model ?? '—'}
-          subtitle="Current unsupervised detector"
+          value="PatchCore"
+          subtitle="Unsupervised detector (fixed)"
           icon={Cpu}
-          loading={loading}
         />
         <StatusCard
           title="Stage 2 Model"
-          value={status?.stage2_available ? 'BGAD' : 'Pending'}
-          subtitle={status?.stage2_available ? 'Supervised active' : 'Collecting labels'}
+          value="GPT-4o"
+          subtitle="In-context refiner (fixed)"
           icon={Zap}
-          color={status?.stage2_available ? 'kul' : 'default'}
-          loading={loading}
+          color="kul"
         />
       </div>
 

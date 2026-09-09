@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # Maximum samples to keep in the labeling pool
     al_pool_max_size: int = 100
 
+    # A Stage 2 verdict at or above this confidence counts as resolved, and
+    # the sample is kept out of the labeling pool entirely.
+    stage2_resolved_confidence: float = 0.8
+
     # -------------------------------------------------------------------------
     # GPT-4V / OpenAI Configuration
     # -------------------------------------------------------------------------

@@ -241,6 +241,20 @@ class Worker:
         self, job: InferenceJob, result: InferenceResult,
     ) -> None:
         """Add the sample to the labeling pool when it is uncertain enough."""
+        # A case Stage 2 already resolved confidently is not worth operator
+        # time, whatever Stage 1 thought of it before Stage 2 ran.
+        if (
+            result.stage2_confidence is not None
+            and result.stage2_confidence >= self.settings.stage2_resolved_confidence
+        ):
+            logger.debug(
+                "labeling_pool_skipped",
+                job_id=job.job_id,
+                reason="stage2_resolved",
+                stage2_confidence=result.stage2_confidence,
+            )
+            return
+
         if result.active_learning.uncertainty_score > self.settings.uncertainty_threshold:
             self.redis.add_to_labeling_pool(
                 image_id=job.image_id,
@@ -541,7 +555,17 @@ class Worker:
         stage2_confidence: Optional[float] = None,
     ) -> InferenceResult:
         """Assemble the final InferenceResult. Stage2Output stays None."""
+        # Stage 1 uncertainty: peaks at 0.5, falls to 0 at either extreme.
         uncertainty = 1.0 - abs(2.0 * anomaly_score - 1.0)
+        # A Stage 2 verdict is newer evidence about the same image, so damp
+        # the Stage 1 figure by how sure Stage 2 was: a confident verdict
+        # collapses it toward 0, an unsure one leaves it almost untouched.
+        # Rejected: recomputing uncertainty as 1 - stage2_confidence outright.
+        # That throws away the Stage 1 signal, so a hedging Stage 2 verdict on
+        # an image PatchCore scored 0.95 would come back as *high* uncertainty
+        # and flood the labeling pool with cases nobody is unsure about.
+        if stage2_confidence is not None:
+            uncertainty *= 1.0 - stage2_confidence
         confidence = 1.0 - uncertainty
         now = datetime.utcnow()
         cost = vlm_api_cost_estimate_usd if vlm_api_cost_estimate_usd > 0 else None

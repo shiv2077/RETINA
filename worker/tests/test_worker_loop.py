@@ -58,6 +58,58 @@ def worker(patched_redis, settings, monkeypatch):
     return Worker(settings.model_copy(update={"openai_api_key": "sk-test"}))
 
 
+class TestLabelingPoolGating:
+    """F21: uncertainty is computed pre-Stage-2, so a confidently resolved
+    case used to land in the pool anyway."""
+
+    def _run(self, worker, job, result, monkeypatch):
+        worker.redis.client.xadd(
+            JOB_QUEUE_STREAM, {"job_data": job.model_dump_json()}
+        )
+        monkeypatch.setattr(worker, "_run_inference", lambda j: result)
+        worker._process_next_job()
+        return worker.redis.client.zrange(f"{KEY_PREFIX}:al:pool", 0, -1)
+
+    def test_confident_stage2_verdict_keeps_the_sample_out_of_the_pool(
+        self, worker, monkeypatch
+    ):
+        job = _job("resolved")
+        result = _completed(job, uncertainty=0.9)
+        result.stage2_verdict = "rejected_false_positive"
+        result.stage2_confidence = 0.95
+
+        assert self._run(worker, job, result, monkeypatch) == []
+
+    def test_unsure_stage2_verdict_still_pools_the_sample(self, worker, monkeypatch):
+        job = _job("unsure")
+        result = _completed(job, uncertainty=0.9)
+        result.stage2_verdict = "uncertain"
+        result.stage2_confidence = 0.4
+
+        assert self._run(worker, job, result, monkeypatch) == ["unsure"]
+
+    def test_stage2_confidence_damps_the_uncertainty_score(self, worker):
+        job = _job("blend")
+        without = worker._build_result(
+            job=job, anomaly_score=0.5, is_anomaly=True, product_class="wood",
+            product_confidence=0.9, natural_description=None, defect_type=None,
+            defect_location=None, defect_severity=None, routing_reason="x",
+            vlm_model_used=None, vlm_api_cost_estimate_usd=0.0, heatmap=None,
+            model_used=ModelType.PATCHCORE, t_start=0.0,
+        )
+        with_stage2 = worker._build_result(
+            job=job, anomaly_score=0.5, is_anomaly=True, product_class="wood",
+            product_confidence=0.9, natural_description=None, defect_type=None,
+            defect_location=None, defect_severity=None, routing_reason="x",
+            vlm_model_used=None, vlm_api_cost_estimate_usd=0.0, heatmap=None,
+            model_used=ModelType.PATCHCORE, t_start=0.0,
+            stage2_verdict="confirmed_anomaly", stage2_confidence=0.8,
+        )
+
+        assert without.active_learning.uncertainty_score == pytest.approx(1.0)
+        assert with_stage2.active_learning.uncertainty_score == pytest.approx(0.2)
+
+
 class TestResultDurability:
     def test_pool_failure_does_not_downgrade_a_completed_result(
         self, worker, monkeypatch

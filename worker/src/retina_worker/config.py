@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # Threshold for binary anomaly classification (score > threshold = anomaly)
     anomaly_threshold: float = 0.5
     
+    # Upper edge of the Stage 2 band. Scores at or above this are ones
+    # PatchCore is already confident about, so a VLM call adds nothing.
+    # The lower edge is anomaly_threshold — anything below was never flagged.
+    stage2_trigger_max: float = 0.9
+
     # Minimum uncertainty score to add sample to active learning pool
     # Samples with uncertainty > this value are candidates for labeling
     uncertainty_threshold: float = 0.3

@@ -108,7 +108,7 @@ class Worker:
 
         # Router + registry — loaded lazily on first inference.
         self.registry = get_default_registry()
-        self.vlm_router = VLMRouter(api_key=self.settings.openai_api_key)
+        self.vlm_router = VLMRouter(settings=self.settings)
         self._session_product_class: Optional[str] = None
         self._session_product_confidence: Optional[float] = None
         self._score_clamp_warned: bool = False

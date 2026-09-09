@@ -27,6 +27,13 @@ The worker interacts with the following Redis keys:
 **Active Learning Samples (Strings)**
 - ``retina:al:samples:{image_id}`` - Sample metadata JSON
 
+**Labels (Hashes) and their index (Sorted Set)**
+- ``retina:labels:{image_id}`` - Operator label, written by the API process
+- ``retina:labels_index`` - image_id scored by the label's ``labeled_at``
+  epoch seconds, so the worker can read the N most recent labels in order.
+  Maintained by the worker; labels written before it exists are backfilled
+  on the next read.
+
 **System Stats (Hash)**
 - ``retina:system:stats`` - Counters and metrics
 """
@@ -60,6 +67,20 @@ WORKER_GROUP = "workers"
 # the same job, so they expire together — otherwise retina:jobs:* accumulates
 # one hash per job forever.
 JOB_TTL_S = 7 * 24 * 60 * 60
+
+# Insertion-ordered index over retina:labels:{image_id}. Named outside the
+# `retina:labels:*` pattern so it is not itself matched by the label scan.
+LABEL_INDEX_KEY = f"{KEY_PREFIX}:labels_index"
+
+
+def _parse_timestamp(labeled_at: str | None) -> float:
+    """ISO-8601 label timestamp as a sort score; 0.0 when absent or unparseable."""
+    if not labeled_at:
+        return 0.0
+    try:
+        return datetime.fromisoformat(labeled_at).timestamp()
+    except ValueError:
+        return 0.0
 
 
 class RedisClient:
@@ -435,6 +456,57 @@ class RedisClient:
             uncertainty=f"{uncertainty_score:.3f}",
         )
     
+    # -------------------------------------------------------------------------
+    # Label Operations
+    # -------------------------------------------------------------------------
+
+    def recent_labels(self, limit: int = 20) -> list[dict[str, str]]:
+        """Return the most recently submitted labels, newest first.
+
+        Ordering comes from LABEL_INDEX_KEY, a sorted set scored by the
+        label's own ``labeled_at`` timestamp. SCAN returns keys in no defined
+        order, so slicing its output was never "most recent" — it was an
+        arbitrary 20.
+        """
+        try:
+            self._sync_label_index()
+            image_ids = self.client.zrevrange(LABEL_INDEX_KEY, 0, limit - 1)
+            labels: list[dict[str, str]] = []
+            for image_id in image_ids:
+                data = self.client.hgetall(f"{KEY_PREFIX}:labels:{image_id}")
+                if not data:
+                    # The label hash expired (7d TTL); drop the stale pointer.
+                    self.client.zrem(LABEL_INDEX_KEY, image_id)
+                    continue
+                labels.append(data)
+            return labels
+        except redis.RedisError as e:
+            logger.warning("recent_labels_failed", error=str(e))
+            return []
+
+    def _sync_label_index(self) -> None:
+        """Index any label the API wrote without touching the index.
+
+        Labels are written by the API process, which does not maintain this
+        index, so labels that predate it (or that any API version writes)
+        are picked up here rather than being invisible. A label with no
+        parseable ``labeled_at`` is scored 0 — it still appears, it just
+        sorts oldest.
+        """
+        # ponytail: one SCAN per call, same O(n) as the code it replaces. The
+        # upgrade path is a ZADD to retina:labels_index in the API's label
+        # handler, after which this sweep can go.
+        for key in self.client.scan_iter(
+            match=f"{KEY_PREFIX}:labels:*", count=100,
+        ):
+            image_id = key.rsplit(":", 1)[-1]
+            if self.client.zscore(LABEL_INDEX_KEY, image_id) is not None:
+                continue
+            self.client.zadd(
+                LABEL_INDEX_KEY,
+                {image_id: _parse_timestamp(self.client.hget(key, "labeled_at"))},
+            )
+
     # -------------------------------------------------------------------------
     # Statistics Operations
     # -------------------------------------------------------------------------

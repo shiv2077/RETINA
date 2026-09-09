@@ -317,6 +317,61 @@ class TestLabelingPool:
         assert f"{KEY_PREFIX}:al:samples:img0" not in remaining
 
 
+class TestRecentLabels:
+    """F25: SCAN has no ordering guarantee, so `label_keys[-20:]` was an
+    arbitrary 20, not the most recent 20."""
+
+    def _label(self, redis_client, image_id, labeled_at, **extra):
+        redis_client.client.hset(
+            f"{KEY_PREFIX}:labels:{image_id}",
+            mapping={
+                "image_id": image_id,
+                "product_class": "wood",
+                "label": "defect",
+                "labeled_at": labeled_at,
+                **extra,
+            },
+        )
+
+    def test_labels_come_back_newest_first(self, redis_client):
+        self._label(redis_client, "old", "2026-01-01T00:00:00")
+        self._label(redis_client, "new", "2026-06-01T00:00:00")
+        self._label(redis_client, "mid", "2026-03-01T00:00:00")
+
+        got = redis_client.recent_labels()
+
+        assert [row["image_id"] for row in got] == ["new", "mid", "old"]
+
+    def test_limit_keeps_the_newest(self, redis_client):
+        for i in range(5):
+            self._label(redis_client, f"l{i}", f"2026-01-0{i + 1}T00:00:00")
+
+        got = redis_client.recent_labels(limit=2)
+
+        assert [row["image_id"] for row in got] == ["l4", "l3"]
+
+    def test_labels_predating_the_index_still_appear(self, redis_client):
+        """A label written without a parseable timestamp must degrade to
+        'oldest', not crash or vanish."""
+        self._label(redis_client, "legacy", "")
+        self._label(redis_client, "fresh", "2026-06-01T00:00:00")
+
+        got = redis_client.recent_labels()
+
+        assert [row["image_id"] for row in got] == ["fresh", "legacy"]
+
+    def test_expired_label_hash_is_dropped_from_the_index(self, redis_client):
+        self._label(redis_client, "gone", "2026-06-01T00:00:00")
+        redis_client.recent_labels()
+        redis_client.client.delete(f"{KEY_PREFIX}:labels:gone")
+
+        assert redis_client.recent_labels() == []
+        assert redis_client.client.zcard(f"{KEY_PREFIX}:labels_index") == 0
+
+    def test_no_labels_yields_an_empty_list(self, redis_client):
+        assert redis_client.recent_labels() == []
+
+
 class TestStats:
     def test_increment_completed_jobs_counts_up(self, redis_client):
         assert redis_client.increment_completed_jobs() == 1

@@ -450,12 +450,8 @@ class Worker:
         few-shot context text to cap per-call cost).
         """
         try:
-            label_keys = list(self.redis.client.scan_iter(match="retina:labels:*"))
             examples: list[dict] = []
-            for key in label_keys[-20:]:
-                data = self.redis.client.hgetall(key)
-                if not data:
-                    continue
+            for data in self.redis.recent_labels(limit=20):
                 if data.get("product_class") == product_class:
                     examples.append({
                         "label": data.get("label", "unknown"),

@@ -76,7 +76,8 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "mypy>=1.8.0",
+    "fakeredis>=2.38.0",
+    "mypy==2.3.1",
     "ruff>=0.3.0",
 ]
 
@@ -112,3 +113,10 @@ warn_unused_ignores = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Integration tests either spend real money on OpenAI calls or need the
+# ~230 MB checkpoints, so a bare `python -m pytest` runs the offline unit
+# suite only. Run the rest deliberately with `-m integration`.
+addopts = "-m 'not integration' --strict-markers"
+markers = [
+    "integration: needs a live OpenAI key or on-disk PatchCore checkpoints (billed/slow)",
+]

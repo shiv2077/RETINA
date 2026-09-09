@@ -106,8 +106,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GPT4V_PRODUCT_TYPE=${GPT4V_PRODUCT_TYPE:-manufactured product}
       - GPT4V_MAX_RETRIES=3
-      # PatchCore: path inside container (matches volume mount below)
-      - PATCHCORE_CHECKPOINT_PATH=/data/models/patchcore
+      # Directory of per-category patchcore_{category}.ckpt files.
+      # NOTE: nothing reads this yet — PatchCoreRegistry hardcodes
+      # ./checkpoints (patchcore_registry.py:22). Wiring it up is a
+      # separate change; this at least stops .env and compose disagreeing.
+      - PATCHCORE_CHECKPOINT_PATH=${PATCHCORE_CHECKPOINT_PATH:-./checkpoints}
     volumes:
       - image-data:/data/images
     depends_on:

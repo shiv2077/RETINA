@@ -58,6 +58,20 @@ LABEL_COUNT_FIELD = "labels_collected"
 STATS_KEY = "retina:system:stats"
 TAXONOMY_KEY = "retina:taxonomy:{product_class}"
 
+# Cap on retina:jobs:queue. Redis Streams never evict on their own, so without
+# this the queue grows without bound for the life of the deployment.
+#
+# Trimming a stream deletes entries even if they are still unacknowledged in a
+# consumer group's Pending Entries List, which would silently drop jobs the
+# worker had claimed but not finished. 100k is chosen to make that impossible
+# in practice: the worker consumes one job at a time (worker.py), so the PEL
+# holds a single entry in steady state and, after a crash, at most the handful
+# of entries claimed before it died. For 100k entries to be dropped from under
+# a live consumer, a worker would have to fall 100k jobs behind while still
+# holding the oldest one pending. At ~1KB per job that is also only ~100MB of
+# Redis, so the cap is cheap to keep generous.
+JOB_STREAM_MAXLEN = int(os.getenv("RETINA_JOB_STREAM_MAXLEN", "100000"))
+
 app = FastAPI(title="RETINA API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -96,7 +110,15 @@ async def submit(file: UploadFile = File(...)) -> dict:
         IMAGE_META_KEY.format(image_id=job_id),
         mapping={"image_path": str(dest.resolve())},
     )
-    await redis_client.xadd(JOB_QUEUE_STREAM, {"job_data": job.model_dump_json()})
+    # maxlen + approximate emits `XADD ... MAXLEN ~ JOB_STREAM_MAXLEN`: Redis
+    # trims lazily at macro-node boundaries, so this is the periodic trim, done
+    # server-side with no extra round trip and no scheduler to keep alive.
+    await redis_client.xadd(
+        JOB_QUEUE_STREAM,
+        {"job_data": job.model_dump_json()},
+        maxlen=JOB_STREAM_MAXLEN,
+        approximate=True,
+    )
     return {"job_id": job_id}
 
 
@@ -249,27 +271,17 @@ async def get_image(image_id: str):
         if r:
             return r
 
-    # 5. Stream scan — last resort. Walk retina:jobs:queue looking for a job
-    #    whose image_id matches, then try its image_path.
-    try:
-        entries = await redis_client.xrange(JOB_QUEUE_STREAM, "-", "+", count=1000)
-        for _entry_id, fields in entries:
-            try:
-                job = json.loads(fields.get("job_data", "{}"))
-            except json.JSONDecodeError:
-                continue
-            if job.get("image_id") == image_id:
-                r = _serve_if_exists(job.get("image_path", ""), "stream_scan", image_id)
-                if r:
-                    return r
-                break
-    except redis.RedisError:
-        pass
-
+    # There was a 5th "last resort" path here that scanned retina:jobs:queue
+    # with XRANGE("-", "+", count=1000). Removed: it read the OLDEST 1000
+    # entries, so it went permanently blind after roughly job #1000, and it
+    # was unreachable anyway. Only two producers write to that stream —
+    # /api/submit above and scripts/submit_job.py — and both write
+    # retina:images:{image_id} with image_path before the XADD, so path 4
+    # already resolves every job the scan could have found.
     logger.warning("image_not_found", image_id=image_id)
     raise HTTPException(
         404, f"image {image_id} not found in uploads, al_samples, results, "
-             "image_meta, or job stream",
+             "or image_meta",
     )
 
 

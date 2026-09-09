@@ -52,15 +52,15 @@ interface Polygon {
   color: string;
 }
 
-interface Sample extends api.CascadeQueueItem {
+interface Sample {
   image_id: string;
   image_path: string;
   anomaly_score?: number;
   uncertainty_score?: number;
   heatmap_base64?: string;
-  bgad_score: number;
+  /** Stage 1 (PatchCore) anomaly score for this sample. */
+  stage1_score: number;
   vlm_score?: number;
-  routing_case: api.CascadeRoutingCase;
   created_at: string;
   metadata?: Record<string, unknown>;
   product_class?: string | null;
@@ -147,9 +147,7 @@ export default function LabelPage() {
         image_path: p.image_id, // canvas URL builder uses this to fetch /api/images/{id}
         anomaly_score: p.anomaly_score ?? undefined,
         uncertainty_score: p.uncertainty_score ?? undefined,
-        bgad_score: p.anomaly_score ?? p.score ?? 0,
-        routing_case: 'C_uncertain_vlm_routed',
-        status: 'pending',
+        stage1_score: p.anomaly_score ?? p.score ?? 0,
         created_at: new Date().toISOString(),
         product_class: p.product_class ?? null,
       } as Sample));
@@ -915,33 +913,30 @@ export default function LabelPage() {
                     <h3 className="text-[10px] uppercase tracking-widest text-text-tertiary font-bold">
                       Inference Telemetry
                     </h3>
-                    <span className="px-2 py-0.5 bg-surface-overlay border border-surface-border rounded text-[10px] font-mono text-text-tertiary uppercase tracking-widest">
-                      {currentSample.routing_case.split('_').slice(-1)[0]}
-                    </span>
                   </div>
 
-                  {/* BGAD score */}
+                  {/* Stage 1 score */}
                   <div className="mb-4 bg-[#0C0C0E] border border-surface-border rounded p-3">
                     <div className="flex items-end justify-between mb-2">
-                      <span className="text-[11px] font-medium text-text-tertiary">BGAD Score</span>
+                      <span className="text-[11px] font-medium text-text-tertiary">Stage 1 Score</span>
                       <span className={[
                         'text-[11px] font-mono font-bold',
-                        currentSample.bgad_score > 0.7 ? 'text-state-alert' :
-                        currentSample.bgad_score > 0.4 ? 'text-state-warn' :
+                        currentSample.stage1_score > 0.7 ? 'text-state-alert' :
+                        currentSample.stage1_score > 0.4 ? 'text-state-warn' :
                         'text-state-pass',
                       ].join(' ')}>
-                        {currentSample.bgad_score.toFixed(4)}
+                        {currentSample.stage1_score.toFixed(4)}
                       </span>
                     </div>
                     <div className="w-full h-0.5 bg-surface-border rounded-full overflow-hidden">
                       <div
                         className={[
                           'h-full',
-                          currentSample.bgad_score > 0.7 ? 'bg-state-alert' :
-                          currentSample.bgad_score > 0.4 ? 'bg-state-warn' :
+                          currentSample.stage1_score > 0.7 ? 'bg-state-alert' :
+                          currentSample.stage1_score > 0.4 ? 'bg-state-warn' :
                           'bg-state-pass',
                         ].join(' ')}
-                        style={{ width: `${Math.min(currentSample.bgad_score * 100, 100)}%` }}
+                        style={{ width: `${Math.min(currentSample.stage1_score * 100, 100)}%` }}
                       />
                     </div>
                   </div>

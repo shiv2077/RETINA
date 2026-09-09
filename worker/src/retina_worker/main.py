@@ -24,8 +24,8 @@ The worker is configured via environment variables:
 - REDIS_URL: Redis connection string (default: redis://localhost:6379)
 - WORKER_CONCURRENCY: Not yet used (default: 1)
 - DEFAULT_UNSUPERVISED_MODEL: Default Stage 1 model (default: patchcore)
-- DEBUG_MODE: Enable debug logging (default: true)
-- MOCK_INFERENCE_DELAY_MS: Simulated delay for testing (default: 500)
+- DEBUG_MODE: Enable debug logging (default: false)
+- MOCK_INFERENCE_DELAY_MS: Simulated delay for testing (default: 0)
 
 See config.py for all configuration options.
 """

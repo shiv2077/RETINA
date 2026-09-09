@@ -2,18 +2,12 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { Upload, Loader2, Search, Brain } from 'lucide-react';
-import { predictCascade, type CascadeResponse } from '@/lib/api';
+import { submitAndWait, type InferenceResult } from '@/lib/api';
 import Card from '@/components/Card';
 import AnomalyScoreBar from '@/components/AnomalyScoreBar';
 import HeatmapOverlay from '@/components/HeatmapOverlay';
 import Badge from '@/components/Badge';
 import ErrorBanner from '@/components/ErrorBanner';
-
-const CATEGORIES = [
-  'bottle','cable','capsule','carpet','grid',
-  'hazelnut','leather','metal_nut','pill','screw',
-  'tile','toothbrush','transistor','wood','zipper',
-];
 
 type RoutingLabel = {
   label: string;
@@ -21,21 +15,34 @@ type RoutingLabel = {
   color: 'pass' | 'warn' | 'alert';
 };
 
-function routingLabel(routingCase: string): RoutingLabel {
-  if (routingCase.includes('normal'))   return { label: 'Stage 1 — Normal', detail: 'PatchCore classified as normal with high confidence', color: 'pass' };
-  if (routingCase.includes('anomaly'))  return { label: 'Stage 1 — Anomaly', detail: 'PatchCore flagged as anomalous with high confidence', color: 'alert' };
-  return { label: 'Stage 1 → VLM Fallback', detail: 'Uncertain — routed to GPT-4o for zero-shot analysis', color: 'warn' };
+/** Maps InferenceResult.routing_reason (set by the worker) to operator-facing copy. */
+function routingLabel(reason: string): RoutingLabel {
+  switch (reason) {
+    case 'patchcore_normal':
+      return { label: 'Stage 1 — Normal', detail: 'PatchCore scored the image below the anomaly threshold', color: 'pass' };
+    case 'patchcore_confirmed_anomaly':
+      return { label: 'Stage 1 — Anomaly', detail: 'PatchCore flagged the image with high confidence; Stage 2 had nothing to add', color: 'alert' };
+    case 'stage2_confirmed':
+      return { label: 'Stage 2 — Confirmed', detail: 'Score fell in the uncertainty band; GPT-4o confirmed the defect against labelled examples', color: 'alert' };
+    case 'stage2_rejected':
+      return { label: 'Stage 2 — Rejected', detail: 'Score fell in the uncertainty band; GPT-4o rejected it as a false positive', color: 'pass' };
+    case 'stage2_uncertain_kept':
+      return { label: 'Stage 2 — Uncertain', detail: 'GPT-4o could not settle the call; the Stage 1 verdict stands', color: 'warn' };
+    case 'unknown_product_zero_shot':
+      return { label: 'Zero-shot Fallback', detail: 'No PatchCore checkpoint for this product; GPT-4o judged the image zero-shot', color: 'warn' };
+    default:
+      return { label: 'Routing', detail: reason, color: 'warn' };
+  }
 }
 
 export default function DemoPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl]     = useState<string | null>(null);
   const [isDragging, setIsDragging]     = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState('bottle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [loading, setLoading] = useState(false);
-  const [result, setResult]   = useState<CascadeResponse | null>(null);
+  const [result, setResult]   = useState<InferenceResult | null>(null);
   const [error, setError]     = useState<string | null>(null);
 
   const handleFileSelect = (file: File) => {
@@ -59,12 +66,7 @@ export default function DemoPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await predictCascade(selectedFile, {
-        normal_threshold: 0.2,
-        anomaly_threshold: 0.8,
-        use_vlm_fallback: true,
-      });
-      setResult(data);
+      setResult(await submitAndWait(selectedFile));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Inference failed. Is the backend running?');
     } finally {
@@ -72,7 +74,7 @@ export default function DemoPage() {
     }
   };
 
-  const routing = result ? routingLabel(result.routing_case) : null;
+  const routing = result?.routing_reason ? routingLabel(result.routing_reason) : null;
 
   return (
     <div>
@@ -82,24 +84,6 @@ export default function DemoPage() {
         <p className="text-sm text-text-tertiary mt-1">
           Upload an image to test the multi-stage detection pipeline
         </p>
-      </div>
-
-      {/* Category chips */}
-      <div className="flex flex-wrap gap-2 justify-center mb-8">
-        {CATEGORIES.map(cat => (
-          <button
-            key={cat}
-            onClick={() => setSelectedCategory(cat)}
-            className={[
-              'rounded-full px-3 py-1 text-xs border transition-colors duration-150',
-              selectedCategory === cat
-                ? 'border-kul-accent bg-kul-blue/10 text-kul-accent'
-                : 'border-surface-border text-text-tertiary hover:border-kul-accent/40 hover:text-kul-accent',
-            ].join(' ')}
-          >
-            {cat}
-          </button>
-        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -193,21 +177,21 @@ export default function DemoPage() {
                       {result.is_anomaly ? 'Anomaly Detected' : 'Normal Sample'}
                     </p>
                     <p className="text-xs text-text-tertiary mt-0.5">
-                      {(result.confidence * 100).toFixed(1)}% confidence
+                      {((result.confidence ?? 0) * 100).toFixed(1)}% confidence
                     </p>
                   </div>
                   <p className="font-mono text-2xl font-bold text-text-primary">
-                    {(result.anomaly_score * 100).toFixed(1)}%
+                    {((result.anomaly_score ?? 0) * 100).toFixed(1)}%
                   </p>
                 </div>
 
                 <p className="text-xs text-text-tertiary mb-2">Anomaly Score</p>
-                <AnomalyScoreBar score={result.anomaly_score} size="lg" showValue />
+                <AnomalyScoreBar score={result.anomaly_score ?? 0} size="lg" showValue />
 
                 <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
                   <div>
                     <p className="text-text-tertiary">Model</p>
-                    <p className="font-mono text-text-primary">{result.model_used}</p>
+                    <p className="font-mono text-text-primary">{result.model_used ?? '—'}</p>
                   </div>
                   <div>
                     <p className="text-text-tertiary">Processing</p>
@@ -230,11 +214,19 @@ export default function DemoPage() {
                 </Card>
               )}
 
-              {/* VLM result */}
-              {result.vlm_result && (
+              {/* VLM description */}
+              {result.natural_description && (
                 <Card padding="sm" className="border-l-2 border-l-purple-500">
-                  <p className="text-xs font-medium text-purple-400 mb-1">GPT-4o Vision</p>
-                  <p className="text-sm text-text-primary">{result.vlm_result.classification}</p>
+                  <p className="text-xs font-medium text-purple-400 mb-1">
+                    {result.vlm_model_used ?? 'GPT-4o'} Vision
+                  </p>
+                  <p className="text-sm text-text-primary">{result.natural_description}</p>
+                  {result.defect_type && (
+                    <p className="text-xs text-text-tertiary mt-1 font-mono">
+                      {result.defect_type}
+                      {result.defect_severity ? ` · ${result.defect_severity}` : ''}
+                    </p>
+                  )}
                 </Card>
               )}
             </>
@@ -270,7 +262,7 @@ export default function DemoPage() {
             {
               num: '3',
               title: 'Stage 2 Refinement',
-              desc: 'BGAD or Push-Pull refines detection using labeled examples',
+              desc: 'GPT-4o re-checks uncertain scores using operator-labelled examples as few-shot context',
               color: 'bg-state-passSubtle text-state-pass',
             },
           ].map(({ num, title, desc, color }) => (

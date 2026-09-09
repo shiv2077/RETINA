@@ -60,19 +60,19 @@ const STAGE1_BENCHMARKS: Benchmark[] = [
 
 const STAGE2_BENCHMARKS: Benchmark[] = [
   {
-    method: 'BGAD',
-    dataset: 'MVTec AD',
+    method: 'BGAD (rejected alternative)',
+    dataset: 'Flanders Make project eval',
     image_auroc: 0.930,
     type: 'Supervised',
-    notes: 'Requires pixel masks',
+    notes: 'Needs pixel masks + per-category training. Unwired research code.',
     measured: false,
   },
   {
-    method: 'Push-Pull',
-    dataset: 'Decospan',
+    method: 'Push-Pull (rejected alternative)',
+    dataset: 'Flanders Make project eval',
     image_auroc: 0.860,
     type: 'Supervised',
-    notes: 'No masks · 100–200 samples',
+    notes: 'No masks, but ~300 samples + per-category training. Not wired.',
     measured: false,
   },
   {

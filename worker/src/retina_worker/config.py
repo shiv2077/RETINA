@@ -82,6 +82,14 @@ class Settings(BaseSettings):
         validation_alias="WORKER_CONSUMER_NAME",
     )
     
+    # An entry pending longer than this is assumed to belong to a worker that
+    # died mid-job, and is reclaimed by the next XAUTOCLAIM sweep.
+    job_reclaim_idle_ms: int = 300_000
+
+    # After this many deliveries an entry is dead-lettered rather than
+    # reclaimed again — past this point it is poison, not bad luck.
+    job_max_deliveries: int = 3
+
     # -------------------------------------------------------------------------
     # Development/Debug
     # -------------------------------------------------------------------------

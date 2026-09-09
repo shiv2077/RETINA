@@ -11,6 +11,9 @@ The worker interacts with the following Redis keys:
 
 **Job Queue (Stream)**
 - ``retina:jobs:queue`` - Inference job queue (consumed via XREADGROUP)
+- ``retina:jobs:dlq`` - Dead-letter stream for entries that cannot be parsed
+  or that exceeded the redelivery cap. Fields: entry_id, reason, failed_at,
+  job_data (the raw payload). Never consumed by the worker; drained by hand.
 
 **Job Metadata (Hashes)**
 - ``retina:jobs:{job_id}`` - Job data and status
@@ -28,11 +31,13 @@ The worker interacts with the following Redis keys:
 - ``retina:system:stats`` - Counters and metrics
 """
 
+import json
 from datetime import datetime
 from typing import Any
 
 import redis
 import structlog
+from pydantic import ValidationError
 
 from .config import Settings
 from .schemas import (
@@ -48,6 +53,7 @@ logger = structlog.get_logger()
 # Redis key constants
 KEY_PREFIX = "retina"
 JOB_QUEUE_STREAM = f"{KEY_PREFIX}:jobs:queue"
+JOB_DLQ_STREAM = f"{KEY_PREFIX}:jobs:dlq"
 WORKER_GROUP = "workers"
 
 
@@ -158,37 +164,134 @@ class RedisClient:
                 count=1,
                 block=block_ms,
             )
-            
-            if not result:
-                return None
-            
-            # Parse result: [[stream_name, [[entry_id, {fields}]]]]
-            stream_name, messages = result[0]
-            entry_id, fields = messages[0]
-            
-            # Parse job data
-            job_json = fields.get("job_data")
-            if not job_json:
-                logger.error("Job missing job_data field", entry_id=entry_id)
-                return None
-            
-            import json
-            job_data = json.loads(job_json)
-            job = InferenceJob(**job_data)
-            
-            logger.debug(
-                "Read job from queue",
-                entry_id=entry_id,
-                job_id=job.job_id,
-                model_type=job.model_type.value,
-            )
-            
-            return entry_id, job
-            
         except redis.RedisError as e:
             logger.error("Failed to read job from queue", error=str(e))
             return None
-    
+
+        if not result:
+            return None
+
+        # Parse result: [[stream_name, [[entry_id, {fields}]]]]
+        _stream_name, messages = result[0]
+        entry_id, fields = messages[0]
+
+        job = self._parse_entry(entry_id, fields)
+        if job is None:
+            return None
+
+        logger.debug(
+            "Read job from queue",
+            entry_id=entry_id,
+            job_id=job.job_id,
+            model_type=job.model_type.value,
+        )
+        return entry_id, job
+
+    def _parse_entry(
+        self, entry_id: str, fields: dict[str, str],
+    ) -> InferenceJob | None:
+        """Decode one stream entry, dead-lettering it if it cannot be parsed.
+
+        A payload the worker cannot decode will never become decodable on a
+        retry, so leaving it in the pending entries list only blocks the slot
+        forever. Every failure path here XACKs and copies the raw payload to
+        the DLQ, where it can be inspected without stalling the queue.
+        """
+        job_json = fields.get("job_data")
+        if not job_json:
+            self._dead_letter(entry_id, fields, "missing_job_data_field")
+            return None
+
+        try:
+            job_data = json.loads(job_json)
+        except json.JSONDecodeError as e:
+            self._dead_letter(entry_id, fields, f"invalid_json: {e}")
+            return None
+
+        try:
+            return InferenceJob(**job_data)
+        except (ValidationError, TypeError) as e:
+            self._dead_letter(entry_id, fields, f"schema_violation: {e}")
+            return None
+
+    def _dead_letter(
+        self, entry_id: str, fields: dict[str, str], reason: str,
+    ) -> None:
+        """Move one poisoned entry off the pending list into the DLQ stream."""
+        try:
+            self.client.xadd(
+                JOB_DLQ_STREAM,
+                {
+                    "entry_id": entry_id,
+                    "reason": reason,
+                    "failed_at": datetime.utcnow().isoformat(),
+                    "job_data": fields.get("job_data", ""),
+                },
+            )
+            self.client.xack(JOB_QUEUE_STREAM, WORKER_GROUP, entry_id)
+        except redis.RedisError as e:
+            logger.error("dead_letter_failed", entry_id=entry_id, error=str(e))
+            return
+        logger.error("job_dead_lettered", entry_id=entry_id, reason=reason)
+
+    def reclaim_stale_jobs(
+        self,
+        min_idle_ms: int,
+        max_deliveries: int,
+        count: int = 10,
+    ) -> list[tuple[str, InferenceJob]]:
+        """Claim entries abandoned by a crashed worker and return them.
+
+        XREADGROUP with ">" never revisits the pending entries list, so an
+        entry read by a worker that then died is invisible to every other
+        replica until something claims it. Entries redelivered more than
+        `max_deliveries` times are dead-lettered instead — they are the ones
+        that keep killing whichever worker picks them up.
+        """
+        try:
+            response = self.client.xautoclaim(
+                name=JOB_QUEUE_STREAM,
+                groupname=WORKER_GROUP,
+                consumername=self.consumer_name,
+                min_idle_time=min_idle_ms,
+                count=count,
+            )
+        except redis.RedisError as e:
+            logger.error("reclaim_failed", error=str(e))
+            return []
+
+        # Redis >= 7 returns (next_cursor, entries, deleted); 6.2 omits deleted.
+        claimed = response[1] if len(response) > 1 else []
+        if not claimed:
+            return []
+
+        try:
+            delivered = {
+                e["message_id"]: e["times_delivered"]
+                for e in self.client.xpending_range(
+                    JOB_QUEUE_STREAM, WORKER_GROUP, min="-", max="+", count=count * 10,
+                )
+            }
+        except redis.RedisError as e:
+            logger.error("reclaim_pending_lookup_failed", error=str(e))
+            delivered = {}
+
+        jobs: list[tuple[str, InferenceJob]] = []
+        for entry_id, fields in claimed:
+            if delivered.get(entry_id, 1) > max_deliveries:
+                self._dead_letter(entry_id, fields, "max_deliveries_exceeded")
+                continue
+            job = self._parse_entry(entry_id, fields)
+            if job is not None:
+                logger.warning(
+                    "job_reclaimed",
+                    entry_id=entry_id,
+                    job_id=job.job_id,
+                    deliveries=delivered.get(entry_id),
+                )
+                jobs.append((entry_id, job))
+        return jobs
+
     def acknowledge_job(self, entry_id: str) -> bool:
         """
         Acknowledge that a job has been processed.
@@ -241,8 +344,6 @@ class RedisClient:
         result : InferenceResult
             Inference result to store
         """
-        import json
-        
         key = f"{KEY_PREFIX}:results:{result.job_id}"
         result_json = result.model_dump_json()
         
@@ -290,8 +391,6 @@ class RedisClient:
         uncertainty_score : float
             Uncertainty measure (used as score)
         """
-        import json
-        
         pool_key = f"{KEY_PREFIX}:al:pool"
         sample_key = f"{KEY_PREFIX}:al:samples:{image_id}"
         
@@ -354,8 +453,6 @@ class RedisClient:
         alert : dict
             Alert data containing job_id, user, label, timestamp
         """
-        import json
-        
         alerts_key = f"{KEY_PREFIX}:alerts"
         
         self.client.lpush(alerts_key, json.dumps(alert))
@@ -379,8 +476,6 @@ class RedisClient:
         dict | None
             Result data if exists
         """
-        import json
-        
         key = f"{KEY_PREFIX}:results:{job_id}"
         result_json = self.client.hget(key, "result_data")
         
@@ -409,8 +504,6 @@ class RedisClient:
         mismatch : bool
             Whether supervised and unsupervised disagree
         """
-        import json
-        
         key = f"{KEY_PREFIX}:results:{job_id}"
         
         # Get existing result

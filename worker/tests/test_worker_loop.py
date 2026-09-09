@@ -100,6 +100,28 @@ class TestResultDurability:
 
         assert worker.redis.get_result("job2")["status"] == JobStatus.COMPLETED.value
 
+    def test_poll_loop_reclaims_an_abandoned_entry(
+        self, worker, settings, monkeypatch
+    ):
+        """F2: an entry left pending by a dead replica is picked up by the
+        sweep at the top of the poll loop, not stranded forever."""
+        from retina_worker.redis_client import RedisClient
+
+        dead = RedisClient(settings.model_copy(update={"consumer_name": "dead-1"}))
+        dead.client.xadd(
+            JOB_QUEUE_STREAM, {"job_data": _job("orphan").model_dump_json()}
+        )
+        dead.read_job(block_ms=1)
+        worker.settings = settings.model_copy(update={"job_reclaim_idle_ms": 0})
+        monkeypatch.setattr(worker, "_run_inference", lambda j: _completed(j, 0.1))
+
+        worker._process_next_job()
+
+        assert worker.redis.get_result("orphan")["status"] == JobStatus.COMPLETED.value
+        assert (
+            worker.redis.client.xpending(JOB_QUEUE_STREAM, WORKER_GROUP)["pending"] == 0
+        )
+
     def test_inference_failure_still_writes_a_failed_result(self, worker, monkeypatch):
         job = _job("job3")
         worker.redis.client.xadd(

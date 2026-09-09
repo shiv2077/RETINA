@@ -156,18 +156,27 @@ class Worker:
     def _process_next_job(self) -> None:
         """
         Process the next job from the queue.
-        
-        Blocks waiting for a job, then processes it.
+
+        First reclaims anything a crashed replica abandoned in the pending
+        entries list, then blocks waiting for a new job.
         """
+        for entry_id, job in self.redis.reclaim_stale_jobs(
+            min_idle_ms=self.settings.job_reclaim_idle_ms,
+            max_deliveries=self.settings.job_max_deliveries,
+        ):
+            self._handle_job(entry_id, job)
+
         # Read next job (blocking)
         job_data = self.redis.read_job(block_ms=5000)
-        
+
         if job_data is None:
             # No job available, continue polling
             return
-        
-        entry_id, job = job_data
-        
+
+        self._handle_job(*job_data)
+
+    def _handle_job(self, entry_id: str, job: InferenceJob) -> None:
+        """Run one job end to end and acknowledge its stream entry."""
         logger.info(
             "Processing job",
             job_id=job.job_id,

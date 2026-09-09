@@ -14,6 +14,7 @@ from datetime import datetime
 import pytest
 
 from retina_worker.redis_client import (
+    JOB_DLQ_STREAM,
     JOB_QUEUE_STREAM,
     KEY_PREFIX,
     WORKER_GROUP,
@@ -134,6 +135,88 @@ class TestReadAndAcknowledge:
 
         assert first is not None
         assert second is None
+
+
+class TestPoisonedEntries:
+    """F2: an unparseable entry must not be stranded in the PEL forever."""
+
+    def _pending(self, redis_client) -> int:
+        return redis_client.client.xpending(JOB_QUEUE_STREAM, WORKER_GROUP)["pending"]
+
+    def _dlq(self, redis_client) -> int:
+        return redis_client.client.xlen(JOB_DLQ_STREAM)
+
+    def test_unparseable_json_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"job_data": "{not json at all"})
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_schema_violation_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(
+            JOB_QUEUE_STREAM, {"job_data": json.dumps({"job_id": "x"})}
+        )
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_missing_job_data_field_is_dead_lettered(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"nonsense": "1"})
+
+        assert redis_client.read_job(block_ms=1) is None
+        assert self._pending(redis_client) == 0
+        assert self._dlq(redis_client) == 1
+
+    def test_dlq_entry_records_reason_and_timestamp(self, redis_client):
+        redis_client.client.xadd(JOB_QUEUE_STREAM, {"job_data": "{not json"})
+        redis_client.read_job(block_ms=1)
+
+        _entry_id, fields = redis_client.client.xrange(JOB_DLQ_STREAM)[0]
+
+        assert fields["reason"]
+        assert fields["failed_at"]
+        assert fields["job_data"] == "{not json"
+
+
+class TestReclaim:
+    """F2: nothing else in the codebase claims stale pending entries."""
+
+    def _abandon(self, redis_client, settings, job_id="stale"):
+        """Read an entry as another consumer and never acknowledge it."""
+        from retina_worker.redis_client import RedisClient
+
+        other = RedisClient(settings.model_copy(update={"consumer_name": "dead-1"}))
+        _enqueue(other.client, _job(job_id))
+        other.read_job(block_ms=1)
+
+    def test_stale_entry_is_reclaimed_and_returned(self, redis_client, settings):
+        self._abandon(redis_client, settings)
+
+        reclaimed = redis_client.reclaim_stale_jobs(min_idle_ms=0, max_deliveries=5)
+
+        assert [job.job_id for _entry_id, job in reclaimed] == ["stale"]
+
+    def test_fresh_entry_is_left_alone(self, redis_client, settings):
+        self._abandon(redis_client, settings)
+
+        assert redis_client.reclaim_stale_jobs(
+            min_idle_ms=60_000, max_deliveries=5
+        ) == []
+
+    def test_entry_over_the_delivery_cap_is_dead_lettered(
+        self, redis_client, settings
+    ):
+        self._abandon(redis_client, settings)
+
+        reclaimed = redis_client.reclaim_stale_jobs(min_idle_ms=0, max_deliveries=0)
+
+        assert reclaimed == []
+        assert redis_client.client.xlen(JOB_DLQ_STREAM) == 1
+        assert (
+            redis_client.client.xpending(JOB_QUEUE_STREAM, WORKER_GROUP)["pending"] == 0
+        )
 
 
 class TestStoreResult:

@@ -164,29 +164,39 @@ no error anywhere.
 ### 1.3 Redis key namespacing — never invent keys without documenting here
 
 ```
-retina:jobs:queue                Stream     Pending jobs (XADD by api, XREADGROUP by worker)
-retina:jobs:{job_id}             Hash       Job status + data
-retina:results:{job_id}          Hash       Field `result_data` = InferenceResult JSON
-retina:images:{image_id}         Hash       Fields: image_path, latest_job_id
-retina:labels:{image_id}         Hash       Expert label + polygons/boxes. TTL 7 days
-retina:al:pool                   SortedSet  Labeling pool, score = anomaly_score (see §6.3)
-retina:al:samples:{image_id}     String     UnlabeledSample metadata JSON
-retina:system:stats              Hash       Counters, incl. the label count
-retina:alerts                    List       Recent alerts (LPUSH, LTRIM to 100)
-retina:taxonomy:{product_class}  String     Operator-added defect categories JSON
+retina:jobs:queue                 Stream     Pending jobs (XADD by api, XREADGROUP by worker).
+                                             Capped: XADD MAXLEN ~ 100000
+retina:jobs:dlq                   Stream     Dead letter. Unparseable payloads and entries past
+                                             the redelivery cap. Fields: entry_id, reason,
+                                             failed_at, job_data
+retina:jobs:{job_id}              Hash       Job status + data. TTL 7 days
+retina:results:{job_id}           Hash       Field `result_data` = InferenceResult JSON. TTL 7 days
+retina:images:{image_id}          Hash       Fields: image_path, latest_job_id
+retina:labels:{image_id}          Hash       Expert label + polygons/boxes. TTL 7 days
+retina:labels_index               SortedSet  image_id scored by the label's `labeled_at`, so
+                                             Stage 2 can take the N most recent labels without
+                                             relying on SCAN order
+retina:al:pool                    SortedSet  Labeling pool, score = uncertainty_score (see §6.3)
+retina:al:samples:{image_id}      String     UnlabeledSample metadata JSON
+retina:session:product_class      String     Cached product identity, TTL 3600 (DECISIONS.md #7)
+retina:session:product_confidence String     Confidence for the above, same TTL
+retina:system:stats               Hash       Counters, incl. the label count
+retina:alerts                     List       Recent alerts (LPUSH, LTRIM to 100)
+retina:taxonomy:{product_class}   String     Operator-added defect categories JSON
 ```
 
-Consumer group name: `workers` (`redis_client.py:51`)
-Stream name: `retina:jobs:queue`
+Consumer group name: `workers`. Consumer name is per-process, defaulting to the
+container hostname — see §4.3 and `config.py`. Stream: `retina:jobs:queue`.
 
-Verified 2026-09-09 against `worker/src/retina_worker/redis_client.py` and
-`api/main.py`. Two keys previously documented here **do not exist** anywhere in
-the codebase and have been removed: `retina:mismatches` and `retina:system:stage`.
-(The Stage 2 activation flag is obsolete regardless — see §6.4.)
+Verified 2026-09-10 against `worker/src/retina_worker/redis_client.py`,
+`worker/src/retina_worker/worker.py` and `api/main.py`, after the worker
+correctness and API lanes merged.
 
-> **Follow-up needed.** Work is landing in parallel that adds a dead-letter
-> stream and a label index. This table documents only what existed at the time
-> of writing; re-verify against `redis_client.py` after those merge.
+Two keys previously documented here **do not exist** anywhere in the codebase
+and have been removed: `retina:mismatches` and `retina:system:stage`. (The
+Stage 2 activation flag is obsolete regardless — see §6.4.) One entry was also
+**wrong**: `retina:al:pool` is scored by `uncertainty_score`, not
+`anomaly_score` — the distinction is the whole point of §6.3.
 
 If you add a Redis key, add it to this table with type, pattern, and purpose.
 

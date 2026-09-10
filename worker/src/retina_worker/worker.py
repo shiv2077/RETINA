@@ -285,18 +285,38 @@ class Worker:
         vlm_cost_usd = 0.0
 
         # ── Step 1: product identification (session-cached) ─────────────
-        product_class = self._get_cached_product_class()
-        product_confidence = self._session_product_confidence if product_class else None
-
-        if product_class is None:
-            logger.info("identifying_product", image_id=job.image_id)
-            pid = self.vlm_router.identify_product(image_bytes)
-            product_class = pid.product_class
-            product_confidence = pid.confidence
-            self._set_cached_product_class(product_class, product_confidence)
-            vlm_cost_usd += COST_IDENTIFY
+        # An operator-declared product_class wins outright: it is line
+        # metadata the submitter already knows, so inferring it would be
+        # paying an external API to guess something we were told. It is
+        # deliberately NOT written to the session cache — it belongs to this
+        # job, and caching it would silently steer later jobs that declared
+        # nothing (DECISIONS.md 17).
+        if job.product_class:
+            product_class = job.product_class
+            # No confidence figure: this was declared, not inferred, and
+            # reporting a fabricated 1.0 would make a stated fact
+            # indistinguishable from a very sure guess.
+            product_confidence = None
+            logger.info(
+                "product_class_declared",
+                image_id=job.image_id,
+                product_class=product_class,
+            )
         else:
-            logger.debug("using_cached_product", product_class=product_class)
+            product_class = self._get_cached_product_class()
+            product_confidence = (
+                self._session_product_confidence if product_class else None
+            )
+
+            if product_class is None:
+                logger.info("identifying_product", image_id=job.image_id)
+                pid = self.vlm_router.identify_product(image_bytes)
+                product_class = pid.product_class
+                product_confidence = pid.confidence
+                self._set_cached_product_class(product_class, product_confidence)
+                vlm_cost_usd += COST_IDENTIFY
+            else:
+                logger.debug("using_cached_product", product_class=product_class)
 
         # ── Step 2: zero-shot branch for unknown or untrained products ──
         if product_class == "unknown" or not self.registry.has_checkpoint(product_class):

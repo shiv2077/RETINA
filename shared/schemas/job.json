@@ -70,6 +70,13 @@
           "description": "Optional webhook URL for result notification"
         }
       }
+    },
+    "product_class": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Operator-declared product category. When present the worker routes straight to that PatchCore checkpoint and skips VLM identification. The API validates it against the checkpoints on disk and rejects unknown values with 400. Absent means infer it (cold start)."
     }
   },
   "examples": [

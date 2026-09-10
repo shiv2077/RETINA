@@ -74,6 +74,14 @@ class InferenceJob(BaseModel):
     status: JobStatus = Field(default=JobStatus.PENDING)
     submitted_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: JobMetadata = Field(default_factory=JobMetadata)
+    # Operator-declared product category. When present the worker routes
+    # straight to that PatchCore checkpoint and never calls identify_product.
+    # The API validates it against the checkpoints on disk before enqueueing,
+    # so the worker can trust it. Absent means "infer it" — the cold-start
+    # path, not the normal one (DECISIONS.md 17).
+    product_class: str | None = Field(
+        None, description="Declared product category; skips VLM identification"
+    )
 
 
 class Stage1Output(BaseModel):

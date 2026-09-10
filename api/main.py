@@ -28,7 +28,7 @@ from typing import Optional
 # redis.asyncio re-exports the same exception hierarchy (redis.RedisError).
 import redis.asyncio as redis
 import structlog
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -38,7 +38,11 @@ logger = structlog.get_logger()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "worker" / "src"))
 
-from retina_worker.config import Settings, image_relpath  # noqa: E402
+from retina_worker.config import (  # noqa: E402
+    Settings,
+    available_categories,
+    image_relpath,
+)
 from retina_worker.schemas import (  # noqa: E402
     InferenceJob,
     JobStatus,
@@ -95,9 +99,43 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 # ── POST /api/submit ─────────────────────────────────────────────────────
 @app.post("/api/submit")
-async def submit(file: UploadFile = File(...)) -> dict:
+async def submit(
+    file: UploadFile = File(...),
+    product_class: Optional[str] = Form(None),
+) -> dict:
+    """Enqueue an image for inference.
+
+    `product_class` is optional. Supplying it is the normal case on a
+    production line, where the station already knows what it is looking
+    at: the worker then routes straight to that PatchCore checkpoint and
+    never calls the VLM identifier. Omitting it is the cold-start path.
+
+    An unknown value is rejected here rather than passed through, because
+    the alternative — letting the worker discover it has no checkpoint and
+    quietly fall back to zero-shot — turns an operator typo into a silently
+    degraded inference that still returns a confident-looking score.
+    """
     if not file.filename:
         raise HTTPException(400, "missing filename")
+
+    if product_class is not None:
+        trained = available_categories(SETTINGS.resolved_checkpoint_dir())
+        if not trained:
+            # Cannot verify the claim, so do not accept it. Silently ignoring
+            # the field would route to the VLM while the caller believes it
+            # pinned the category.
+            raise HTTPException(
+                503,
+                "no PatchCore checkpoints available, cannot honour product_class "
+                f"(looked in {SETTINGS.resolved_checkpoint_dir()})",
+            )
+        if product_class not in trained:
+            raise HTTPException(
+                400,
+                f"unknown product_class {product_class!r}; "
+                f"trained categories are {trained}",
+            )
+
     job_id = uuid.uuid4().hex[:12]
     content = await file.read()
 
@@ -115,6 +153,7 @@ async def submit(file: UploadFile = File(...)) -> dict:
         stage=PipelineStage.UNSUPERVISED,
         status=JobStatus.PENDING,
         submitted_at=datetime.utcnow(),
+        product_class=product_class,
     )
     # Only the relative layout is recorded. The worker resolves the same id
     # against its own mount, so nothing here is tied to this host's paths.
@@ -131,7 +170,20 @@ async def submit(file: UploadFile = File(...)) -> dict:
         maxlen=JOB_STREAM_MAXLEN,
         approximate=True,
     )
-    return {"job_id": job_id, "image_id": image_id}
+    return {"job_id": job_id, "image_id": image_id, "product_class": product_class}
+
+
+# ── GET /api/categories ──────────────────────────────────────────────────
+@app.get("/api/categories")
+async def categories() -> dict:
+    """Product categories that have a trained PatchCore checkpoint.
+
+    Exists so the UI can offer the exact set /api/submit will accept
+    instead of carrying its own copy of the list, which is how the two
+    halves of this system have drifted apart before.
+    """
+    trained = available_categories(SETTINGS.resolved_checkpoint_dir())
+    return {"categories": trained, "count": len(trained)}
 
 
 # ── GET /api/result/{job_id} ─────────────────────────────────────────────

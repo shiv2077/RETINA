@@ -54,6 +54,25 @@ def image_relpath(image_id: str) -> Path:
     return Path(image_id[:2]) / f"{image_id}.png"
 
 
+CHECKPOINT_NAMING = "patchcore_{category}.ckpt"
+
+
+def available_categories(checkpoint_dir: Path) -> list[str]:
+    """Categories with a PatchCore checkpoint on disk.
+
+    Lives here rather than on PatchCoreRegistry so the API can validate a
+    caller-supplied product_class without importing torch and anomalib into
+    a web process. The registry calls this too, so the two cannot disagree
+    about what "trained" means.
+    """
+    if not checkpoint_dir.is_dir():
+        return []
+    return sorted(
+        f.stem.removeprefix("patchcore_")
+        for f in checkpoint_dir.glob("patchcore_*.ckpt")
+    )
+
+
 def _default_consumer_name() -> str:
     """One consumer identity per worker process.
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Upload,
@@ -12,7 +12,7 @@ import {
   Tag,
   Layers,
 } from 'lucide-react';
-import { submitAndWait, type InferenceResult } from '@/lib/api';
+import { submitAndWait, fetchTrainedCategories, type InferenceResult } from '@/lib/api';
 import Card from '@/components/Card';
 import GlassCard from '@/components/GlassCard';
 import AnomalyScoreBar from '@/components/AnomalyScoreBar';
@@ -38,6 +38,19 @@ export default function SubmitPage() {
   const [result, setResult] = useState<InferenceResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentEntry[]>([]);
+
+  // Declared product category. Empty means "let the worker identify it",
+  // which costs a VLM call; picking one routes straight to that checkpoint.
+  const [declaredClass, setDeclaredClass] = useState<string>('');
+  const [trainedCategories, setTrainedCategories] = useState<string[]>([]);
+
+  useEffect(() => {
+    // Offer exactly what the backend will accept, rather than a local copy
+    // of the list that could drift from the checkpoints on disk.
+    fetchTrainedCategories()
+      .then(setTrainedCategories)
+      .catch(() => setTrainedCategories([]));
+  }, []);
 
   const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) {
@@ -80,6 +93,7 @@ export default function SubmitPage() {
       const data = await submitAndWait(selectedFile, {
         pollMs: 1000,
         timeoutMs: 60_000,
+        productClass: declaredClass || null,
       });
       setResult(data);
       setJobId(data.job_id);
@@ -182,6 +196,35 @@ export default function SubmitPage() {
                 </p>
               </Card>
             )}
+
+            <div className="mb-4">
+              <label
+                htmlFor="product-class"
+                className="block text-sm text-text-secondary mb-1.5"
+              >
+                Product category{' '}
+                <span className="text-text-tertiary">
+                  (optional — skips VLM identification)
+                </span>
+              </label>
+              <select
+                id="product-class"
+                value={declaredClass}
+                onChange={e => setDeclaredClass(e.target.value)}
+                disabled={isSubmitting || trainedCategories.length === 0}
+                className="w-full bg-white/5 border border-white/12 rounded-lg px-3 py-2
+                           text-text-primary disabled:opacity-50"
+              >
+                <option value="">
+                  {trainedCategories.length === 0
+                    ? 'No trained checkpoints available'
+                    : 'Identify automatically (VLM)'}
+                </option>
+                {trainedCategories.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
 
             <button
               type="submit"

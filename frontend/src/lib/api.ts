@@ -201,9 +201,16 @@ export async function getHealth(): Promise<HealthResponse> {
  *
  * The backend returns only { job_id }. Callers should poll getResult(job_id).
  */
-export async function submitImage(file: File): Promise<{ job_id: string }> {
+export async function submitImage(
+  file: File,
+  productClass?: string | null,
+): Promise<{ job_id: string; image_id: string; product_class: string | null }> {
   const form = new FormData();
   form.append('file', file);
+  // Sent only when the caller actually knows it. The backend rejects an
+  // unknown value with 400 rather than falling back to VLM identification,
+  // so a wrong value fails loudly instead of quietly costing an API call.
+  if (productClass) form.append('product_class', productClass);
   const response = await fetch(`${API_BASE_URL}/api/submit`, {
     method: 'POST',
     body: form,
@@ -243,10 +250,10 @@ export async function getResult(job_id: string): Promise<InferenceResult | null>
  */
 export async function submitAndWait(
   file: File,
-  opts: { pollMs?: number; timeoutMs?: number } = {},
+  opts: { pollMs?: number; timeoutMs?: number; productClass?: string | null } = {},
 ): Promise<InferenceResult> {
-  const { pollMs = 1000, timeoutMs = 60_000 } = opts;
-  const { job_id } = await submitImage(file);
+  const { pollMs = 1000, timeoutMs = 60_000, productClass = null } = opts;
+  const { job_id } = await submitImage(file, productClass);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await getResult(job_id);
@@ -352,4 +359,16 @@ export async function submitLabelV2(
     );
   }
   return response.json();
+}
+
+/**
+ * Product categories with a trained PatchCore checkpoint — exactly the set
+ * POST /api/submit will accept for product_class. Fetched rather than
+ * hardcoded so the UI cannot offer a category the backend would reject.
+ */
+export async function fetchTrainedCategories(): Promise<string[]> {
+  const r = await fetch(`${API_BASE_URL}/api/categories`);
+  if (!r.ok) throw new ApiError(`categories fetch failed: ${r.statusText}`, r.status);
+  const data = await r.json();
+  return data.categories ?? [];
 }

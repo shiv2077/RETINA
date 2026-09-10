@@ -18,7 +18,7 @@ import structlog
 import torch
 from anomalib.models import Patchcore
 
-from ..config import Settings
+from ..config import Settings, available_categories
 
 logger = structlog.get_logger()
 
@@ -52,12 +52,8 @@ class PatchCoreRegistry:
         self._load_times: dict[str, float] = {}
 
     def available_categories(self) -> list[str]:
-        if not self.checkpoint_dir.exists():
-            return []
-        return sorted(
-            f.stem.removeprefix("patchcore_")
-            for f in self.checkpoint_dir.glob("patchcore_*.ckpt")
-        )
+        # Shared with the API via config so both agree on what "trained" means.
+        return available_categories(self.checkpoint_dir)
 
     def has_checkpoint(self, category: str) -> bool:
         return (self.checkpoint_dir /

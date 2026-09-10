@@ -189,6 +189,21 @@ class RedisClient:
                 count=1,
                 block=block_ms,
             )
+        except redis.exceptions.TimeoutError:
+            # Not an error: BLOCK elapsed with nothing new in the stream.
+            # redis-py 7.x returns an empty list for this; 8.x raises
+            # TimeoutError instead, and because that subclasses RedisError the
+            # catch-all below logged an idle queue as an ERROR every block
+            # interval. Both shapes mean the same thing — no job — so both
+            # return None here and the caller cannot tell which client it has.
+            #
+            # This is safe only while socket_timeout is unset (it is: the
+            # client is built with from_url and no timeout, redis_client.py
+            # __init__). If a socket_timeout is ever configured, a genuinely
+            # slow server would also raise TimeoutError and would be
+            # swallowed as idle — distinguish the two here if that changes.
+            logger.debug("read_job_idle", block_ms=block_ms)
+            return None
         except redis.RedisError as e:
             logger.error("Failed to read job from queue", error=str(e))
             return None

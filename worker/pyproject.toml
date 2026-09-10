@@ -38,7 +38,11 @@ classifiers = [
 # -----------------------------------------------------------------------------
 dependencies = [
     # Redis client for job queue consumption
-    "redis>=5.0.0",
+    # Pinned exactly: 8.x changed how an expired BLOCK on a consumer-group
+    # read is reported (TimeoutError instead of an empty list), and an
+    # unpinned range resolved to 7.4.0 natively against 8.1.0 in the
+    # container — the same code logging an idle queue two different ways.
+    "redis==8.1.0",
 
     # Data validation and settings management
     "pydantic>=2.0.0",

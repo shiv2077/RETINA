@@ -64,8 +64,19 @@ dependencies = [
     "torch>=2.0.0,<3.0.0",
     "torchvision>=0.15.0,<1.0.0",
 
-    # Anomalib — production-grade PatchCore/PaDiM training pipeline
-    "anomalib>=1.0.0,<2.0.0",
+    # Anomalib — production-grade PatchCore/PaDiM training pipeline.
+    # Pinned exactly: checkpoint loading is version-sensitive, and 2.3.3 is
+    # what produced the checkpoints in checkpoints/ and what README.md's
+    # benchmark methodology records. The previous <2.0.0 constraint resolved
+    # to 1.2.0 in the container, a different major version from the one this
+    # project actually runs natively.
+    "anomalib==2.3.3",
+
+    # anomalib 2.x ships a deliberately minimal base install and does not
+    # pull in the training framework itself, so the worker has to ask for it
+    # explicitly — without this the container dies at import with
+    # ModuleNotFoundError: No module named 'lightning'.
+    "lightning>=2.2.0,<3.0.0",
 ]
 
 # -----------------------------------------------------------------------------

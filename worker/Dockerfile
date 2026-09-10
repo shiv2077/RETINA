@@ -35,7 +35,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 
 # Copy dependency specification
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 
 # Install dependencies
 # Note: Using pip install with pyproject.toml
@@ -53,9 +53,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+# Install runtime dependencies.
+# The lib* packages are for OpenCV, which anomalib imports transitively
+# (anomalib.utils.cv -> cv2). The opencv wheel links against X11/GL shared
+# objects that a -slim base image does not ship, so importing anomalib dies
+# with "libxcb.so.1: cannot open shared object file" without these. They are
+# runtime-only: the builder stage never imports cv2.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

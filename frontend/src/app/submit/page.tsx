@@ -262,18 +262,35 @@ export default function SubmitPage() {
                   className={result.is_anomaly ? '' : 'border-state-pass/20'}
                 >
                   <div className="flex items-center justify-between mb-4">
+                    {/* needs_review is not a failure and not a verdict: the
+                        pipeline ran and declined to call it. Rendering it as
+                        either would misreport what happened. */}
                     <p className={[
                       'text-xl font-semibold',
-                      result.is_anomaly ? 'text-state-alert' : 'text-state-pass',
+                      result.status === 'needs_review'
+                        ? 'text-accent-secondary'
+                        : result.is_anomaly ? 'text-state-alert' : 'text-state-pass',
                     ].join(' ')}>
-                      {result.is_anomaly ? 'Anomaly Detected' : 'Normal'}
+                      {result.status === 'needs_review'
+                        ? 'Needs Review'
+                        : result.is_anomaly ? 'Anomaly Detected' : 'Normal'}
                     </p>
-                    {result.confidence != null && (
+                    {result.status === 'needs_review' ? (
+                      <Badge color="default">awaiting operator</Badge>
+                    ) : result.confidence != null && (
                       <Badge color={result.is_anomaly ? 'alert' : 'pass'}>
                         {(result.confidence * 100).toFixed(0)}% conf.
                       </Badge>
                     )}
                   </div>
+
+                  {result.status === 'needs_review' && (
+                    <p className="text-sm text-text-secondary mb-4">
+                      The pipeline completed but did not reach a verdict it
+                      stands behind, so this image has been queued for expert
+                      review. This is normal operation, not a failure.
+                    </p>
+                  )}
 
                   {productLine && (
                     <p className="text-xs text-text-tertiary mb-3">

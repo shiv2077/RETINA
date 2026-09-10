@@ -27,7 +27,19 @@ export type ModelType = 'patchcore' | 'padim' | 'winclip' | 'gpt4v' | 'pushpull'
 export type PipelineStage = 1 | 2;
 
 /** Job status */
-export type JobStatus = 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
+/**
+ * Job lifecycle status. Three terminal states, and the difference between
+ * the last two is operational: `needs_review` means the pipeline ran fine
+ * and declined to decide (a human should look), `failed` means the
+ * pipeline broke (someone should be paged). See docs/DECISIONS.md #18.
+ */
+export type JobStatus =
+  | 'pending'
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'needs_review'
+  | 'failed';
 
 // -----------------------------------------------------------------------------
 // Request Types

@@ -39,11 +39,26 @@ class PipelineStage(int, Enum):
 
 
 class JobStatus(str, Enum):
-    """Job lifecycle status."""
+    """Job lifecycle status.
+
+    Three of these are terminal, and the distinction between two of them
+    matters operationally:
+
+    - COMPLETED: the pipeline reached a verdict it stands behind.
+    - NEEDS_REVIEW: the pipeline ran correctly and declined to decide. This
+      is normal operation, not a fault — a human should look at the image.
+    - FAILED: the pipeline broke. Infrastructure or code is wrong and
+      someone should be paged.
+
+    Collapsing the middle case into FAILED makes the failure rate
+    uninterpretable, because abstention volume tracks how hard the images
+    are, not how healthy the system is (DECISIONS.md 18).
+    """
     PENDING = "pending"
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"
+    NEEDS_REVIEW = "needs_review"
     FAILED = "failed"
 
 

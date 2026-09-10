@@ -17,7 +17,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["pending", "processing", "completed", "failed"],
+      "enum": ["pending", "processing", "completed", "needs_review", "failed"],
       "description": "Current status of the inference job"
     },
     "created_at": {

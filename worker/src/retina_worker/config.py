@@ -181,6 +181,12 @@ class Settings(BaseSettings):
     # the sample is kept out of the labeling pool entirely.
     stage2_resolved_confidence: float = 0.8
 
+    # A score whose distance-from-boundary uncertainty reaches this is an
+    # abstention: the pipeline ran but has no verdict worth acting on, so the
+    # job terminates as NEEDS_REVIEW rather than COMPLETED. 0.5 corresponds to
+    # scores in roughly [0.25, 0.75]. See DECISIONS.md 18.
+    abstain_uncertainty: float = 0.5
+
     # -------------------------------------------------------------------------
     # GPT-4V / OpenAI Configuration
     # -------------------------------------------------------------------------

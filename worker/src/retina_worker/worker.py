@@ -224,8 +224,9 @@ class Worker:
                 )
 
             logger.info(
-                "Job completed",
+                "Job finished",
                 job_id=job.job_id,
+                status=result.status.value,
                 anomaly_score=f"{result.anomaly_score:.3f}" if result.anomaly_score else "N/A",
                 is_anomaly=result.is_anomaly,
                 processing_time_ms=result.processing_time_ms,
@@ -235,10 +236,39 @@ class Worker:
             # Always acknowledge the job
             self.redis.acknowledge_job(entry_id)
 
+    def _is_abstention(self, score: float) -> bool:
+        """True when a score sits too close to the decision boundary to call.
+
+        Zero-shot returns no confidence figure (the prompt does not ask for
+        one, and adding it would change the prompt for something the score
+        already expresses), so distance from the boundary is the signal:
+        1 - |2s - 1| peaks at 0.5 and falls to 0 at either extreme.
+        """
+        return (1.0 - abs(2.0 * score - 1.0)) >= self.settings.abstain_uncertainty
+
     def _record_for_active_learning(
         self, job: InferenceJob, result: InferenceResult,
     ) -> None:
-        """Add the sample to the labeling pool when it is uncertain enough."""
+        """Add the sample to the labeling pool when it is uncertain enough.
+
+        A NEEDS_REVIEW result goes in unconditionally: that status means the
+        pipeline declined to decide and asked for a human, so the labeling
+        pool is exactly where it belongs, whatever the uncertainty arithmetic
+        says about the underlying score.
+        """
+        if result.status == JobStatus.NEEDS_REVIEW:
+            self.redis.add_to_labeling_pool(
+                image_id=job.image_id,
+                anomaly_score=result.anomaly_score or 0.0,
+                uncertainty_score=result.active_learning.uncertainty_score,
+            )
+            logger.info(
+                "labeling_pool_added",
+                job_id=job.job_id,
+                reason="needs_review",
+            )
+            return
+
         # A case Stage 2 already resolved confidently is not worth operator
         # time, whatever Stage 1 thought of it before Stage 2 ran.
         if (
@@ -343,6 +373,13 @@ class Worker:
                 defect_location=None,
                 defect_severity=None,
                 routing_reason="unknown_product_zero_shot",
+                # Zero-shot has no calibrated score for this product and says
+                # so; that is an abstention, not a verdict and not a fault.
+                status=(
+                    JobStatus.NEEDS_REVIEW
+                    if self._is_abstention(zs.anomaly_score)
+                    else JobStatus.COMPLETED
+                ),
                 vlm_model_used="gpt-4o",
                 vlm_api_cost_estimate_usd=vlm_cost_usd,
                 heatmap=None,
@@ -367,6 +404,8 @@ class Worker:
         defect_severity = None
         vlm_model_used: str | None = None
         routing_reason = "patchcore_normal"
+        # COMPLETED unless something downstream declines to decide.
+        terminal_status = JobStatus.COMPLETED
         stage2_verdict: str | None = None
         stage2_defect_class: str | None = None
         stage2_confidence: float | None = None
@@ -404,6 +443,9 @@ class Worker:
                 routing_reason = "stage2_confirmed"
             else:
                 routing_reason = "stage2_uncertain_kept"
+                # Stage 2 looked and could not call it. The pipeline worked;
+                # it simply has no verdict to offer, which is a review case.
+                terminal_status = JobStatus.NEEDS_REVIEW
 
             if is_anomaly:
                 natural_description, defect_type, defect_location, defect_severity = (
@@ -432,6 +474,7 @@ class Worker:
             routing_reason=routing_reason,
             vlm_model_used=vlm_model_used,
             vlm_api_cost_estimate_usd=vlm_cost_usd,
+            status=terminal_status,
             heatmap=heatmap,
             model_used=ModelType.PATCHCORE,
             t_start=t_start,
@@ -595,6 +638,7 @@ class Worker:
         stage2_verdict: str | None = None,
         stage2_defect_class: str | None = None,
         stage2_confidence: float | None = None,
+        status: JobStatus = JobStatus.COMPLETED,
     ) -> InferenceResult:
         """Assemble the final InferenceResult. Stage2Output stays None."""
         anomaly_score = self._clamp_score(anomaly_score, model_used.value)
@@ -616,7 +660,7 @@ class Worker:
         return InferenceResult(
             job_id=job.job_id,
             image_id=job.image_id,
-            status=JobStatus.COMPLETED,
+            status=status,
             created_at=now,
             completed_at=now,
             model_used=model_used,

@@ -6,6 +6,7 @@ Loads configuration from environment variables with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
+import re
 import secrets
 import socket
 from pathlib import Path
@@ -18,8 +19,39 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # than the process working directory is the point: the worker is launched
 # from the repo root natively and from / in the container, and a CWD-relative
 # default silently resolves to a different place in each.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_MODULE = Path(__file__).resolve()
+# parents[3] is the repo root for the native layout
+# (worker/src/retina_worker/config.py). The container installs the package at
+# /app/retina_worker/, which has fewer parents than that — indexing blindly
+# raised IndexError at import and killed the container on startup. The
+# defaults below are unused there anyway, because compose sets both paths
+# explicitly, but the module still has to import.
+_REPO_ROOT = _MODULE.parents[3] if len(_MODULE.parents) > 3 else _MODULE.parent
 DEFAULT_CHECKPOINT_DIR = _REPO_ROOT / "checkpoints"
+DEFAULT_IMAGE_ROOT = _REPO_ROOT / "data" / "images"
+
+# Content addresses are hex digests; this also excludes "..", separators
+# and anything else that could climb out of the image root.
+_SAFE_IMAGE_ID = re.compile(r"[A-Za-z0-9_-]{4,128}")
+
+
+def image_relpath(image_id: str) -> Path:
+    """Storage path for an image, RELATIVE to whatever root resolves to.
+
+    The submitter and the worker each join this onto their own root, so the
+    layout below the root is byte-identical on both sides of a container
+    boundary and neither process ever serializes an absolute path.
+
+    Sharded on the first two characters of the (content-addressed) id: a
+    flat directory would accumulate every image ever submitted, and this
+    repo already has a documented O(n) directory-scan problem.
+    """
+    # Allowlist rather than blocklist. Rejecting only separators is not
+    # enough: ".." carries neither, is exactly long enough to shard on, and
+    # would resolve one level ABOVE the root.
+    if not _SAFE_IMAGE_ID.fullmatch(image_id):
+        raise ValueError(f"unusable image_id: {image_id!r}")
+    return Path(image_id[:2]) / f"{image_id}.png"
 
 
 def _default_consumer_name() -> str:
@@ -151,6 +183,24 @@ class Settings(BaseSettings):
     # derived from this module's location, not the working directory).
     # Set an absolute path in containers, where the repo layout differs.
     patchcore_checkpoint_path: str = ""
+
+    # Root of the shared image store. Both the submitting API and the worker
+    # resolve this independently — natively it is the repo's data/images, in
+    # a container it is the mount point set by RETINA_IMAGE_ROOT — and join
+    # image_relpath() onto it. Same relative layout, different roots.
+    image_root: str = Field(default="", validation_alias="RETINA_IMAGE_ROOT")
+
+    def resolved_image_root(self) -> Path:
+        """Absolute root of the image store. Same resolution order as
+        resolved_checkpoint_dir: explicit config, then env, then an anchor
+        derived from this module's location — never the working directory."""
+        if self.image_root:
+            return Path(self.image_root).expanduser().resolve()
+        return DEFAULT_IMAGE_ROOT
+
+    def image_path(self, image_id: str) -> Path:
+        """Absolute on-disk location of an image for this process."""
+        return self.resolved_image_root() / image_relpath(image_id)
 
     def resolved_checkpoint_dir(self) -> Path:
         """Absolute directory to load PatchCore checkpoints from.

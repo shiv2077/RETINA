@@ -85,8 +85,20 @@ services:
       # and this must not depend on the container's working directory.
       # Note the checkpoints still need mounting in for this to resolve.
       - PATCHCORE_CHECKPOINT_PATH=${PATCHCORE_CHECKPOINT_PATH:-/data/checkpoints}
+      # Mount point for the shared image store. The API resolves the same
+      # image_id against its own root (natively: ./data/images) and this
+      # container resolves it against this one. Same relative layout below
+      # the root, so no absolute path ever crosses the boundary.
+      - RETINA_IMAGE_ROOT=/data/images
     volumes:
-      - image-data:/data/images
+      # Bind mount, NOT a named volume. api/main.py runs natively (it has no
+      # service here), so a named volume would be invisible to it and the
+      # worker would receive ids whose bytes it cannot see. Binding the same
+      # host directory is what makes the native-API / containerized-worker
+      # split actually work.
+      - ./data/images:/data/images
+      # Read-only: the worker loads checkpoints, it never writes them.
+      - ./checkpoints:/data/checkpoints:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -142,8 +154,8 @@ services:
 volumes:
   redis-data:
     driver: local
-  image-data:
-    driver: local
+  # image-data removed: the image store is a bind mount of ./data/images so
+  # the natively-run API and the containerized worker share one directory.
 
 # =============================================================================
 # Networks

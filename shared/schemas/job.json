@@ -4,7 +4,13 @@
   "title": "InferenceJob",
   "description": "Schema for inference job messages passed between Rust backend and Python worker via Redis Streams. This contract ensures type-safe communication across language boundaries.",
   "type": "object",
-  "required": ["job_id", "image_id", "model_type", "stage", "submitted_at"],
+  "required": [
+    "job_id",
+    "image_id",
+    "model_type",
+    "stage",
+    "submitted_at"
+  ],
   "properties": {
     "job_id": {
       "type": "string",
@@ -13,16 +19,25 @@
     },
     "image_id": {
       "type": "string",
-      "description": "Reference to the submitted image. In current implementation, this is a simulated ID. Future: S3/MinIO object key."
+      "description": "sha256 content address of the image bytes. Resolved to a filesystem location by each process against its OWN image root (see Settings.image_path / image_relpath). Never a resolved absolute path: one host's path is meaningless inside the worker container."
     },
     "model_type": {
       "type": "string",
-      "enum": ["patchcore", "padim", "winclip", "gpt4v", "pushpull"],
+      "enum": [
+        "patchcore",
+        "padim",
+        "winclip",
+        "gpt4v",
+        "pushpull"
+      ],
       "description": "Model to use for inference. Stage 1 models: patchcore, padim, winclip, gpt4v (zero-shot fallback). Stage 2 model: pushpull (requires labeled data)."
     },
     "stage": {
       "type": "integer",
-      "enum": [1, 2],
+      "enum": [
+        1,
+        2
+      ],
       "description": "Pipeline stage. 1 = Unsupervised/Zero-shot detection. 2 = Supervised classification (requires AL labels)."
     },
     "submitted_at": {

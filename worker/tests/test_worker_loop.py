@@ -29,7 +29,6 @@ def _job(job_id: str = "job1") -> InferenceJob:
         stage=PipelineStage.UNSUPERVISED,
         status=JobStatus.PENDING,
         submitted_at=datetime.utcnow(),
-        image_path=f"/tmp/{job_id}.png",
     )
 
 

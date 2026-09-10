@@ -62,16 +62,18 @@ class InferenceJob(BaseModel):
     to ensure seamless JSON serialization across language boundaries.
     """
     job_id: str = Field(..., description="Unique job identifier (UUID)")
-    image_id: str = Field(..., description="Reference to the image")
+    # Content address: sha256 of the image bytes. The submitter and the worker
+    # each resolve it against their OWN image root via Settings.image_path(),
+    # so the job payload stays portable across a container boundary. It must
+    # never carry a resolved filesystem path again — a host-absolute path in
+    # here is unreadable from inside the worker container (CLAUDE.md §8).
+    image_id: str = Field(..., description="sha256 content address of the image")
     model_type: ModelType = Field(default=ModelType.PATCHCORE)
     stage: PipelineStage = Field(default=PipelineStage.UNSUPERVISED)
     priority: int = Field(default=5, ge=0, le=10)
     status: JobStatus = Field(default=JobStatus.PENDING)
     submitted_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: JobMetadata = Field(default_factory=JobMetadata)
-    # Path to the saved image file on the shared Docker volume.
-    # Set by the backend after uploading; enables workers to load pixel data.
-    image_path: str | None = Field(None, description="Absolute path to image on shared volume")
 
 
 class Stage1Output(BaseModel):

@@ -13,6 +13,7 @@ Redis streams. Wire format matches scripts/submit_job.py exactly.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ logger = structlog.get_logger()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "worker" / "src"))
 
+from retina_worker.config import Settings, image_relpath  # noqa: E402
 from retina_worker.schemas import (  # noqa: E402
     InferenceJob,
     JobStatus,
@@ -44,8 +46,12 @@ from retina_worker.schemas import (  # noqa: E402
     PipelineStage,
 )
 
-UPLOAD_DIR = REPO_ROOT / "data" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# Shared with the worker on purpose: both sides must agree on where an image
+# lives for a given id, and duplicating that rule in two codebases is how the
+# two halves of this system have drifted apart before.
+SETTINGS = Settings()
+IMAGE_ROOT = SETTINGS.resolved_image_root()
+IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Carries credentials when Redis runs with requirepass; falls back to a
 # local unauthenticated instance for native dev runs.
@@ -54,7 +60,7 @@ JOB_QUEUE_STREAM = "retina:jobs:queue"
 RESULT_KEY = "retina:results:{job_id}"
 AL_POOL_KEY = "retina:al:pool"
 AL_SAMPLE_KEY = "retina:al:samples:{image_id}"
-IMAGE_META_KEY = "retina:images:{image_id}"  # hash: image_path, latest_job_id
+IMAGE_META_KEY = "retina:images:{image_id}"  # hash: image_relpath, latest_job_id
 LABEL_KEY = "retina:labels:{image_id}"
 LABEL_COUNT_FIELD = "labels_collected"
 STATS_KEY = "retina:system:stats"
@@ -93,24 +99,28 @@ async def submit(file: UploadFile = File(...)) -> dict:
     if not file.filename:
         raise HTTPException(400, "missing filename")
     job_id = uuid.uuid4().hex[:12]
-    dest = UPLOAD_DIR / f"{job_id}.png"
     content = await file.read()
+
+    # Content address: identical bytes get the same id and the same location,
+    # so a resubmission overwrites itself instead of accumulating duplicates.
+    image_id = hashlib.sha256(content).hexdigest()
+    dest = SETTINGS.image_path(image_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(content)
 
     job = InferenceJob(
         job_id=job_id,
-        image_id=job_id,
+        image_id=image_id,
         model_type=ModelType.PATCHCORE,
         stage=PipelineStage.UNSUPERVISED,
         status=JobStatus.PENDING,
         submitted_at=datetime.utcnow(),
-        image_path=str(dest.resolve()),
     )
-    # Record reverse image_id → image_path mapping so /api/images/ can
-    # serve the file even after the worker processes the job.
+    # Only the relative layout is recorded. The worker resolves the same id
+    # against its own mount, so nothing here is tied to this host's paths.
     await redis_client.hset(
-        IMAGE_META_KEY.format(image_id=job_id),
-        mapping={"image_path": str(dest.resolve())},
+        IMAGE_META_KEY.format(image_id=image_id),
+        mapping={"image_relpath": str(image_relpath(image_id))},
     )
     # maxlen + approximate emits `XADD ... MAXLEN ~ JOB_STREAM_MAXLEN`: Redis
     # trims lazily at macro-node boundaries, so this is the periodic trim, done
@@ -121,7 +131,7 @@ async def submit(file: UploadFile = File(...)) -> dict:
         maxlen=JOB_STREAM_MAXLEN,
         approximate=True,
     )
-    return {"job_id": job_id}
+    return {"job_id": job_id, "image_id": image_id}
 
 
 # ── GET /api/result/{job_id} ─────────────────────────────────────────────
@@ -219,72 +229,28 @@ async def labels_submit(body: LabelSubmission) -> dict:
 
 
 # ── GET /api/images/{image_id} ───────────────────────────────────────────
-def _serve_if_exists(path_str: str, source: str, image_id: str):
-    """Return a FileResponse if the path exists on disk, else None.
-
-    Logs which lookup path succeeded so we can trace 404s in production.
-    """
-    if not path_str:
-        return None
-    cand = Path(path_str)
-    if not cand.is_file():
-        return None
-    mime = "image/png" if cand.suffix.lower() == ".png" else "image/jpeg"
-    logger.info("image_served", image_id=image_id, source=source, path=str(cand))
-    return FileResponse(cand, media_type=mime)
-
-
 @app.get("/api/images/{image_id}")
 async def get_image(image_id: str):
-    # 1. uploads directory (FastAPI /api/submit multipart path)
-    upload_path = UPLOAD_DIR / f"{image_id}.png"
-    if upload_path.is_file():
-        return FileResponse(upload_path, media_type="image/png")
+    """Serve an image by its content address.
 
-    # 2. AL sample metadata — retina:al:samples:{id}
-    sample_json = await redis_client.get(AL_SAMPLE_KEY.format(image_id=image_id))
-    if sample_json:
-        try:
-            sample = json.loads(sample_json)
-            r = _serve_if_exists(sample.get("image_path", ""), "al_sample", image_id)
-            if r:
-                return r
-        except json.JSONDecodeError:
-            pass
+    Content addressing collapses what used to be five lookup paths (uploads
+    dir, AL sample metadata, result hash, reverse mapping, and a stream
+    scan) into one derivation. Those paths existed only because the id
+    alone did not tell you where the bytes were; now it does. The id is
+    never joined raw onto a path — image_relpath rejects separators, so a
+    traversal attempt is a 400 rather than a filesystem probe.
+    """
+    try:
+        path = SETTINGS.image_path(image_id)
+    except ValueError:
+        raise HTTPException(400, f"malformed image_id: {image_id}") from None
 
-    # 3. Result hash — retina:results:{image_id} (if an InferenceResult
-    #    ever carries image_path, pick it up here)
-    result_json = await redis_client.hget(
-        RESULT_KEY.format(job_id=image_id), "result_data",
-    )
-    if result_json:
-        try:
-            result = json.loads(result_json)
-            r = _serve_if_exists(result.get("image_path", ""), "result", image_id)
-            if r:
-                return r
-        except json.JSONDecodeError:
-            pass
+    if not path.is_file():
+        logger.warning("image_not_found", image_id=image_id, path=str(path))
+        raise HTTPException(404, f"image {image_id} not found")
 
-    # 4. Reverse mapping — retina:images:{image_id}
-    meta = await redis_client.hgetall(IMAGE_META_KEY.format(image_id=image_id))
-    if meta:
-        r = _serve_if_exists(meta.get("image_path", ""), "image_meta", image_id)
-        if r:
-            return r
-
-    # There was a 5th "last resort" path here that scanned retina:jobs:queue
-    # with XRANGE("-", "+", count=1000). Removed: it read the OLDEST 1000
-    # entries, so it went permanently blind after roughly job #1000, and it
-    # was unreachable anyway. Only two producers write to that stream —
-    # /api/submit above and scripts/submit_job.py — and both write
-    # retina:images:{image_id} with image_path before the XADD, so path 4
-    # already resolves every job the scan could have found.
-    logger.warning("image_not_found", image_id=image_id)
-    raise HTTPException(
-        404, f"image {image_id} not found in uploads, al_samples, results, "
-             "or image_meta",
-    )
+    logger.info("image_served", image_id=image_id, path=str(path))
+    return FileResponse(path, media_type="image/png")
 
 
 # ── /api/taxonomy/{product_class} ───────────────────────────────────────

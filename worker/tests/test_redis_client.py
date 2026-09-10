@@ -36,7 +36,6 @@ def _job(job_id: str = "job1") -> InferenceJob:
         stage=PipelineStage.UNSUPERVISED,
         status=JobStatus.PENDING,
         submitted_at=datetime.utcnow(),
-        image_path=f"/tmp/{job_id}.png",
     )
 
 
@@ -105,7 +104,6 @@ class TestReadAndAcknowledge:
         assert got is not None
         entry_id, job = got
         assert job.job_id == "abc123"
-        assert job.image_path == "/tmp/abc123.png"
         assert entry_id
 
     def test_unacknowledged_job_stays_pending(self, redis_client):

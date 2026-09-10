@@ -278,7 +278,8 @@ class Worker:
         if image_bytes is None:
             raise RuntimeError(
                 f"Cannot run inference without image bytes (job_id={job.job_id}, "
-                f"image_path={job.image_path!r})"
+                f"image_id={job.image_id!r} under "
+                f"{self.settings.resolved_image_root()})"
             )
 
         vlm_cost_usd = 0.0
@@ -463,18 +464,32 @@ class Worker:
             return []
 
     def _load_image_bytes(self, job: InferenceJob) -> bytes | None:
-        """Read the image file written by the submitter, or return None."""
-        if not job.image_path:
+        """Read the image the submitter stored, or return None.
+
+        The path is derived from the content address against THIS process's
+        image root, so it works whether the submitter was on the host or in
+        another container.
+        """
+        try:
+            path = self.settings.image_path(job.image_id)
+        except ValueError as exc:
+            logger.warning("image_id_invalid", image_id=job.image_id, error=str(exc))
             return None
         try:
-            with open(job.image_path, "rb") as f:
-                data = f.read()
-            logger.debug("image_loaded", path=job.image_path, bytes=len(data))
+            data = path.read_bytes()
+            logger.info(
+                "image_loaded",
+                image_id=job.image_id,
+                path=str(path),
+                bytes=len(data),
+            )
             return data
         except OSError as exc:
             logger.warning(
                 "image_read_failed",
-                path=job.image_path,
+                image_id=job.image_id,
+                path=str(path),
+                image_root=str(self.settings.resolved_image_root()),
                 error=str(exc),
             )
             return None

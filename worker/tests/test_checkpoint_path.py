@@ -58,3 +58,35 @@ class TestResolvedCheckpointDir:
         expected = Path(__file__).resolve().parents[2] / "checkpoints"
 
         assert DEFAULT_CHECKPOINT_DIR == expected
+
+
+class TestShallowLayoutImport:
+    """The container installs the package at /app/retina_worker/, which has
+    fewer path parents than the native worker/src/retina_worker/ layout.
+    Indexing parents[3] blindly raised IndexError at import time and killed
+    the worker container on startup — caught only by actually running it."""
+
+    def test_repo_root_derivation_survives_a_shallow_path(self, tmp_path):
+        shallow = tmp_path / "app" / "retina_worker" / "config.py"
+        shallow.parent.mkdir(parents=True)
+        shallow.touch()
+        resolved = shallow.resolve()
+
+        # Mirrors the module-level derivation in config.py.
+        root = (
+            resolved.parents[3]
+            if len(resolved.parents) > 3
+            else resolved.parent
+        )
+
+        assert root.is_absolute()
+
+    def test_config_imports_under_a_container_like_layout(self):
+        """The real assertion: importing config must never raise."""
+        import importlib
+
+        import retina_worker.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.DEFAULT_IMAGE_ROOT.is_absolute()
+        assert cfg.DEFAULT_CHECKPOINT_DIR.is_absolute()

@@ -105,7 +105,7 @@ class Worker:
         self.running = False
 
         # Router + registry — loaded lazily on first inference.
-        self.registry = get_default_registry()
+        self.registry = get_default_registry(self.settings)
         self.vlm_router = VLMRouter(settings=self.settings)
         self._session_product_class: str | None = None
         self._session_product_confidence: float | None = None

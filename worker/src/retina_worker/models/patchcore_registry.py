@@ -1,8 +1,10 @@
 """Per-category PatchCore checkpoint registry with LRU GPU caching.
 
 One instance serves the whole worker process. Checkpoints live at
-`./checkpoints/patchcore_{category}.ckpt` (anomalib format, produced by
-`scripts/train_anomalib.py`). Models are loaded lazily on first `get()` and
+`<checkpoint_dir>/patchcore_{category}.ckpt` (anomalib format, produced by
+`scripts/train_anomalib.py`). The directory comes from
+`Settings.resolved_checkpoint_dir()` — absolute, never CWD-relative.
+Models are loaded lazily on first `get()` and
 kept in a thread-safe LRU cache sized for the 6 GB RTX 3060 budget.
 """
 from __future__ import annotations
@@ -16,10 +18,11 @@ import structlog
 import torch
 from anomalib.models import Patchcore
 
+from ..config import Settings
+
 logger = structlog.get_logger()
 
 
-CHECKPOINT_DIR = Path("./checkpoints")
 CHECKPOINT_NAMING = "patchcore_{category}.ckpt"
 
 # Tuned for RTX 3060 Laptop (6 GB). Each checkpoint is ~230 MB on disk; the
@@ -33,10 +36,16 @@ class PatchCoreRegistry:
 
     def __init__(
         self,
-        checkpoint_dir: Path = CHECKPOINT_DIR,
+        checkpoint_dir: Path | str | None = None,
         max_cached: int = MAX_CACHED_MODELS,
+        settings: Settings | None = None,
     ):
-        self.checkpoint_dir = Path(checkpoint_dir)
+        # Resolution order: explicit argument, then PATCHCORE_CHECKPOINT_PATH,
+        # then the repo-root default. Never the working directory.
+        if checkpoint_dir is not None:
+            self.checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
+        else:
+            self.checkpoint_dir = (settings or Settings()).resolved_checkpoint_dir()
         self.max_cached = max_cached
         self._cache: OrderedDict[str, Patchcore] = OrderedDict()
         self._lock = threading.Lock()
@@ -131,8 +140,8 @@ class PatchCoreRegistry:
 _default_registry: PatchCoreRegistry | None = None
 
 
-def get_default_registry() -> PatchCoreRegistry:
+def get_default_registry(settings: Settings | None = None) -> PatchCoreRegistry:
     global _default_registry
     if _default_registry is None:
-        _default_registry = PatchCoreRegistry()
+        _default_registry = PatchCoreRegistry(settings=settings)
     return _default_registry

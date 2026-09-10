@@ -79,11 +79,12 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GPT4V_PRODUCT_TYPE=${GPT4V_PRODUCT_TYPE:-manufactured product}
       - GPT4V_MAX_RETRIES=3
-      # Directory of per-category patchcore_{category}.ckpt files.
-      # NOTE: nothing reads this yet — PatchCoreRegistry hardcodes
-      # ./checkpoints (patchcore_registry.py:22). Wiring it up is a
-      # separate change; this at least stops .env and compose disagreeing.
-      - PATCHCORE_CHECKPOINT_PATH=${PATCHCORE_CHECKPOINT_PATH:-./checkpoints}
+      # Directory of per-category patchcore_{category}.ckpt files, read by
+      # Settings.resolved_checkpoint_dir(). Absolute on purpose: the repo
+      # layout the native default derives from does not exist in the image,
+      # and this must not depend on the container's working directory.
+      # Note the checkpoints still need mounting in for this to resolve.
+      - PATCHCORE_CHECKPOINT_PATH=${PATCHCORE_CHECKPOINT_PATH:-/data/checkpoints}
     volumes:
       - image-data:/data/images
     depends_on:

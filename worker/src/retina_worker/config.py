@@ -8,9 +8,18 @@ Uses pydantic-settings for validation and type coercion.
 
 import secrets
 import socket
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# config.py lives at worker/src/retina_worker/config.py, so the repo root is
+# four levels up. Deriving the default from the module's own location rather
+# than the process working directory is the point: the worker is launched
+# from the repo root natively and from / in the container, and a CWD-relative
+# default silently resolves to a different place in each.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CHECKPOINT_DIR = _REPO_ROOT / "checkpoints"
 
 
 def _default_consumer_name() -> str:
@@ -137,9 +146,23 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # PatchCore Configuration
     # -------------------------------------------------------------------------
-    # Directory where the memory bank checkpoint is stored.
-    # Leave empty to start without a checkpoint (call train() to build it).
+    # Directory holding per-category patchcore_{category}.ckpt files.
+    # Leave empty to use DEFAULT_CHECKPOINT_DIR (repo-root/checkpoints,
+    # derived from this module's location, not the working directory).
+    # Set an absolute path in containers, where the repo layout differs.
     patchcore_checkpoint_path: str = ""
+
+    def resolved_checkpoint_dir(self) -> Path:
+        """Absolute directory to load PatchCore checkpoints from.
+
+        Always absolute, so a worker started from any working directory
+        resolves the same checkpoints. An explicitly configured relative
+        path is still honoured (resolved against the CWD) because that can
+        only be a deliberate choice by whoever set the variable.
+        """
+        if self.patchcore_checkpoint_path:
+            return Path(self.patchcore_checkpoint_path).expanduser().resolve()
+        return DEFAULT_CHECKPOINT_DIR
 
 
 def get_settings() -> Settings:

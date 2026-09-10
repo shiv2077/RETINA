@@ -43,6 +43,7 @@ export default function SubmitPage() {
   // which costs a VLM call; picking one routes straight to that checkpoint.
   const [declaredClass, setDeclaredClass] = useState<string>('');
   const [trainedCategories, setTrainedCategories] = useState<string[]>([]);
+  const [queue, setQueue] = useState<{ depth: number; ceiling: number } | null>(null);
 
   useEffect(() => {
     // Offer exactly what the backend will accept, rather than a local copy
@@ -94,6 +95,7 @@ export default function SubmitPage() {
         pollMs: 1000,
         timeoutMs: 60_000,
         productClass: declaredClass || null,
+        onQueued: s => setQueue({ depth: s.queue_depth, ceiling: s.queue_ceiling }),
       });
       setResult(data);
       setJobId(data.job_id);
@@ -195,6 +197,13 @@ export default function SubmitPage() {
                   job_id={jobId} · polling /api/result/{jobId} …
                 </p>
               </Card>
+            )}
+
+            {queue && (
+              <p className="text-xs text-text-tertiary mb-3">
+                Queue depth {queue.depth} / {queue.ceiling}
+                {queue.depth / queue.ceiling > 0.8 && ' — backlog is close to the ceiling'}
+              </p>
             )}
 
             <div className="mb-4">

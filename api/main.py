@@ -84,6 +84,16 @@ TAXONOMY_KEY = "retina:taxonomy:{product_class}"
 # Redis, so the cap is cheap to keep generous.
 JOB_STREAM_MAXLEN = int(os.getenv("RETINA_JOB_STREAM_MAXLEN", "100000"))
 
+# Load-shedding ceiling. One worker drains this queue one job at a time
+# (DECISIONS.md 12) while any number of producers can push into it, so
+# without a backpressure signal the only feedback a submitter gets is a
+# result that arrives minutes late. Past this depth /api/submit refuses
+# work outright: a 503 the caller can react to beats a queue slot whose
+# latency nobody bounded. XLEN counts entries still in the stream, which
+# after F18/F2 includes acknowledged ones until MAXLEN trims them, so this
+# is a conservative over-estimate of outstanding work.
+JOB_QUEUE_MAX_DEPTH = int(os.getenv("RETINA_JOB_QUEUE_MAX_DEPTH", "1000"))
+
 app = FastAPI(title="RETINA API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -117,6 +127,15 @@ async def submit(
     """
     if not file.filename:
         raise HTTPException(400, "missing filename")
+
+    depth = await redis_client.xlen(JOB_QUEUE_STREAM)
+    if depth >= JOB_QUEUE_MAX_DEPTH:
+        logger.warning("submission_shed", depth=depth, ceiling=JOB_QUEUE_MAX_DEPTH)
+        raise HTTPException(
+            503,
+            f"queue depth {depth} is at or above the ceiling of "
+            f"{JOB_QUEUE_MAX_DEPTH}; retry once the worker catches up",
+        )
 
     if product_class is not None:
         trained = available_categories(SETTINGS.resolved_checkpoint_dir())
@@ -170,7 +189,15 @@ async def submit(
         maxlen=JOB_STREAM_MAXLEN,
         approximate=True,
     )
-    return {"job_id": job_id, "image_id": image_id, "product_class": product_class}
+    return {
+        "job_id": job_id,
+        "image_id": image_id,
+        "product_class": product_class,
+        # Depth after this submission, so the caller can see the backlog it
+        # just joined rather than having to poll a separate endpoint.
+        "queue_depth": depth + 1,
+        "queue_ceiling": JOB_QUEUE_MAX_DEPTH,
+    }
 
 
 # ── GET /api/categories ──────────────────────────────────────────────────

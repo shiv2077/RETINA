@@ -213,10 +213,20 @@ export async function getHealth(): Promise<HealthResponse> {
  *
  * The backend returns only { job_id }. Callers should poll getResult(job_id).
  */
+export interface SubmitResponse {
+  job_id: string;
+  image_id: string;
+  product_class: string | null;
+  /** Depth of the job queue including this submission. */
+  queue_depth: number;
+  /** Depth at which further submissions are shed with a 503. */
+  queue_ceiling: number;
+}
+
 export async function submitImage(
   file: File,
   productClass?: string | null,
-): Promise<{ job_id: string; image_id: string; product_class: string | null }> {
+): Promise<SubmitResponse> {
   const form = new FormData();
   form.append('file', file);
   // Sent only when the caller actually knows it. The backend rejects an
@@ -262,10 +272,18 @@ export async function getResult(job_id: string): Promise<InferenceResult | null>
  */
 export async function submitAndWait(
   file: File,
-  opts: { pollMs?: number; timeoutMs?: number; productClass?: string | null } = {},
+  opts: {
+    pollMs?: number;
+    timeoutMs?: number;
+    productClass?: string | null;
+    /** Called once the job is queued, with the backlog it joined. */
+    onQueued?: (submission: SubmitResponse) => void;
+  } = {},
 ): Promise<InferenceResult> {
   const { pollMs = 1000, timeoutMs = 60_000, productClass = null } = opts;
-  const { job_id } = await submitImage(file, productClass);
+  const submission = await submitImage(file, productClass);
+  const { job_id } = submission;
+  opts.onQueued?.(submission);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await getResult(job_id);

@@ -99,10 +99,18 @@ efficientad_outputs/
 # -----------------------------------------------------------------------------
 # Large/Archive directories
 # -----------------------------------------------------------------------------
-v1/
-models/
-data /
-shared/
+# Anchored with a leading slash so they match ONLY these root directories.
+# Unanchored, `models/` also matched worker/src/retina_worker/models/ and
+# `shared/` matched the tracked schema source in shared/. Files already
+# tracked stay tracked, so nothing broke loudly — but `git add <dir>` skips
+# ignored paths silently, so staging by directory dropped source files
+# without failing. `shared/` is removed outright rather than anchored:
+# shared/schemas/*.json is the declared source of truth (CLAUDE.md 1.2) and
+# lives at the root, so any form of the rule would ignore real source.
+# (`data /`, with a stray space, matched nothing; root data/ is already
+# covered under "Data & Logs" above.)
+/v1/
+/models/
 
 # Custom Additions
 MSVPD_Unified_Dataset/

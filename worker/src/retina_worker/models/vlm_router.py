@@ -14,15 +14,30 @@ from __future__ import annotations
 import base64
 import io
 import json
+import time
 
 import structlog
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from PIL import Image
 from pydantic import BaseModel
 
 from ..config import Settings
 
 logger = structlog.get_logger()
+
+
+class VLMUnavailableError(RuntimeError):
+    """Raised when an OpenAI call could not be completed within its budget.
+
+    Distinct from a parse or schema error: this means the API did not
+    answer, which is what the circuit breaker counts (DECISIONS.md 20).
+    """
 
 
 KNOWN_PRODUCT_CATEGORIES = [
@@ -82,7 +97,14 @@ class VLMRouter:
         # 0.5 silently skipped Stage 2 for every deployment tuned below it.
         self.stage2_trigger_min = self.settings.anomaly_threshold
         self.stage2_trigger_max = self.settings.stage2_trigger_max
-        self.client = OpenAI(api_key=key)
+        # Explicit per-request timeout: the SDK's default is generous enough
+        # that a hung call would stall the single-threaded poll loop for
+        # minutes, and no job of any kind progresses meanwhile.
+        self.client = OpenAI(
+            api_key=key,
+            timeout=self.settings.openai_timeout_s,
+            max_retries=0,  # retries are handled by _call_with_retry below
+        )
         logger.info(
             "vlm_router_initialized",
             identify_model="gpt-4o-mini",
@@ -90,6 +112,61 @@ class VLMRouter:
             stage2_band=(self.stage2_trigger_min, self.stage2_trigger_max),
             key_prefix=key[:10] + "...",
         )
+
+
+    def _call_with_retry(self, what: str, **kwargs):
+        """One OpenAI chat completion with bounded retry and a wall-clock cap.
+
+        Retries only what is worth retrying: 429 and 5xx are transient, and
+        a timeout may be. A 400 or an auth failure will fail identically on
+        the next attempt, so it is raised immediately rather than burning
+        the budget. Backoff is 2**attempt seconds per CLAUDE.md 4.2.
+
+        The deadline bounds the whole logical call, not each attempt: three
+        attempts that each just miss a 30s timeout would otherwise cost the
+        poll loop 90s plus backoff, and the worker processes one job at a
+        time.
+        """
+        deadline = time.monotonic() + self.settings.openai_total_deadline_s
+        attempts = max(1, self.settings.gpt4v_max_retries)
+        last_exc: Exception | None = None
+
+        for attempt in range(attempts):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "openai_deadline_exhausted", call=what, attempt=attempt,
+                )
+                break
+            try:
+                return self.client.chat.completions.create(
+                    timeout=min(self.settings.openai_timeout_s, remaining),
+                    **kwargs,
+                )
+            except (RateLimitError, APITimeoutError, APIConnectionError,
+                    InternalServerError) as exc:
+                last_exc = exc
+                backoff = 2 ** attempt
+                if attempt == attempts - 1 or backoff >= deadline - time.monotonic():
+                    logger.warning(
+                        "openai_call_failed",
+                        call=what,
+                        attempts=attempt + 1,
+                        error=type(exc).__name__,
+                    )
+                    break
+                logger.info(
+                    "openai_retrying",
+                    call=what,
+                    attempt=attempt + 1,
+                    backoff_s=backoff,
+                    error=type(exc).__name__,
+                )
+                time.sleep(backoff)
+
+        raise VLMUnavailableError(
+            f"{what} failed after bounded retry"
+        ) from last_exc
 
     @staticmethod
     def _encode_image(image_bytes: bytes, max_side: int = 1024) -> str:
@@ -129,7 +206,8 @@ Respond with JSON:
   "is_known_category": true | false
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = self._call_with_retry(
+            "identify_product",
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -215,7 +293,8 @@ Respond with JSON:
   "confidence": 0.0-1.0
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = self._call_with_retry(
+            "describe_defect",
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -296,7 +375,8 @@ Respond with JSON:
             "}"
         )
 
-        response = self.client.chat.completions.create(
+        response = self._call_with_retry(
+            "stage2_refine",
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -350,7 +430,8 @@ Respond with JSON:
   "suggested_defect_type": "scratch" | "crack" | ... | null
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = self._call_with_retry(
+            "zero_shot_detect",
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},

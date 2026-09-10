@@ -200,6 +200,16 @@ class Settings(BaseSettings):
     # Retry attempts on rate-limit or timeout errors
     gpt4v_max_retries: int = 3
 
+    # Per-request timeout for a single OpenAI call, in seconds. The worker is
+    # single-threaded (DECISIONS.md 12), so an untimed call blocks the whole
+    # poll loop for as long as the SDK's own default allows — minutes.
+    openai_timeout_s: float = 30.0
+
+    # Ceiling on total wall time for one logical call including retries and
+    # backoff. Bounds the worst case a single job can cost the loop, which
+    # per-attempt timeouts alone do not.
+    openai_total_deadline_s: float = 90.0
+
     # -------------------------------------------------------------------------
     # PatchCore Configuration
     # -------------------------------------------------------------------------

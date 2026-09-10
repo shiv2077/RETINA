@@ -66,8 +66,13 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Copy public assets
-COPY --from=builder /app/public ./public
+# No public/ directory: this app serves no static assets from a public
+# path — no images, favicon, manifest or next/image usage anywhere in
+# src/, and frontend/public/ has never existed in this repo. The COPY that
+# used to be here referenced it anyway and failed the build outright
+# ("/app/public: not found"), so `docker compose up` never reached the
+# worker. Everything the runtime actually needs comes from the standalone
+# output copied below. Restore a COPY here if real assets are ever added.
 
 # Set proper permissions for prerender cache
 RUN mkdir .next && chown nextjs:nodejs .next
@@ -87,8 +92,12 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 # Health check
+# 127.0.0.1, not localhost: inside this image localhost resolves to the IPv6
+# [::1] first, while the Next.js standalone server binds IPv4 0.0.0.0, so the
+# probe was refused and the container reported unhealthy while serving 200
+# perfectly well on the published port.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000 || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000 || exit 1
 
 # Run the server
 CMD ["node", "server.js"]

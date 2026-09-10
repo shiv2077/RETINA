@@ -45,9 +45,10 @@ import torch
 from PIL import Image
 from torchvision.transforms.v2 import functional as TVF  # noqa: N812 conventional alias
 
+from .circuit_breaker import CircuitBreaker, CircuitOpenError
 from .config import Settings
 from .models.patchcore_registry import get_default_registry
-from .models.vlm_router import VLMRouter
+from .models.vlm_router import VLMRouter, VLMUnavailableError
 from .redis_client import RedisClient
 from .schemas import (
     ActiveLearningMeta,
@@ -110,6 +111,15 @@ class Worker:
         self._session_product_class: str | None = None
         self._session_product_confidence: float | None = None
         self._score_clamp_warned: bool = False
+        # Guards identify_product only. That call is on the critical path of
+        # every job without a declared product_class, so it is where an
+        # outage does the most damage; the other VLM calls are reached only
+        # after Stage 1 has already produced a score.
+        self.vlm_breaker = CircuitBreaker(
+            name="identify_product",
+            failure_threshold=self.settings.vlm_breaker_failure_threshold,
+            cooldown_s=self.settings.vlm_breaker_cooldown_s,
+        )
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -339,8 +349,42 @@ class Worker:
             )
 
             if product_class is None:
-                logger.info("identifying_product", image_id=job.image_id)
-                pid = self.vlm_router.identify_product(image_bytes)
+                try:
+                    self.vlm_breaker.guard()
+                    logger.info("identifying_product", image_id=job.image_id)
+                    pid = self.vlm_router.identify_product(image_bytes)
+                except (CircuitOpenError, VLMUnavailableError) as exc:
+                    # The identifier is unavailable, so this image cannot be
+                    # routed to a checkpoint. That is not a pipeline fault:
+                    # degrade to a human rather than recording a FAILED job
+                    # that would page someone about someone else's outage.
+                    if isinstance(exc, VLMUnavailableError):
+                        self.vlm_breaker.record_failure()
+                    logger.warning(
+                        "identify_unavailable",
+                        job_id=job.job_id,
+                        breaker=self.vlm_breaker.state.value,
+                        error=type(exc).__name__,
+                    )
+                    return self._build_result(
+                        job=job,
+                        anomaly_score=0.5,
+                        is_anomaly=False,
+                        product_class=None,
+                        product_confidence=None,
+                        natural_description=None,
+                        defect_type=None,
+                        defect_location=None,
+                        defect_severity=None,
+                        routing_reason="vlm_unavailable_needs_review",
+                        vlm_model_used=None,
+                        vlm_api_cost_estimate_usd=vlm_cost_usd,
+                        status=JobStatus.NEEDS_REVIEW,
+                        heatmap=None,
+                        model_used=ModelType.GPT4V,
+                        t_start=t_start,
+                    )
+                self.vlm_breaker.record_success()
                 product_class = pid.product_class
                 product_confidence = pid.confidence
                 self._set_cached_product_class(product_class, product_confidence)

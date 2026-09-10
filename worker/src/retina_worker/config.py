@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     # per-attempt timeouts alone do not.
     openai_total_deadline_s: float = 90.0
 
+    # Consecutive VLM failures before the breaker opens. Low on purpose:
+    # every job past the first is re-proving an outage already diagnosed,
+    # at the full retry budget above. See DECISIONS.md 21.
+    vlm_breaker_failure_threshold: int = 3
+
+    # How long the breaker stays open before letting one probe through.
+    vlm_breaker_cooldown_s: float = 60.0
+
     # -------------------------------------------------------------------------
     # PatchCore Configuration
     # -------------------------------------------------------------------------

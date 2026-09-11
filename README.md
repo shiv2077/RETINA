@@ -4,8 +4,10 @@ RETINA is a defect-detection pipeline developed at KU Leuven in partnership
 with Flanders Make, targeted at industrial quality-control deployments across
 multiple product lines (wood veneer, plastics, electrical components). It
 combines a per-category PatchCore memory-bank detector with a GPT-4o router
-that handles product identification, defect description, and supervised
-refinement on ambiguous cases. Stage 1 covers all 15 MVTec AD categories with
+that handles defect description and supervised refinement on ambiguous
+cases, plus product identification when the caller does not already know
+the product — on a line it usually does, and declaring it skips that call
+entirely. Stage 1 covers all 15 MVTec AD categories with
 a measured mean image AUROC of **0.9829** (13 of 15 categories ≥ 0.95). Stage
 2 is a zero-training supervised refiner that uses operator-labeled examples
 as in-context supervision, making it viable across customers without
@@ -14,50 +16,83 @@ per-customer retraining.
 ## Pipeline at a Glance
 
 ```
-        ┌──────────────────────────────────────────────────────────────┐
-        │                         image bytes                          │
-        └──────────────────────────────┬───────────────────────────────┘
-                                       │
-                        ┌──────────────▼──────────────┐
-                        │ identify_product (gpt-4o-mini)│
-                        │   session-cached 1h TTL       │
-                        └──────────────┬──────────────┘
-                                       │
-                    ┌──────known?──────┴──────unknown?──────┐
-                    │                                       │
-     ┌──────────────▼──────────────┐          ┌─────────────▼────────────┐
-     │  PatchCore (per-category)   │          │ zero_shot_detect (gpt-4o) │
-     │  registry of 15 checkpoints │          │  reasoning + score        │
-     └──────────────┬──────────────┘          └─────────────┬────────────┘
-                    │ score                                 │
-       ┌────────────┼────────────┐                          │
-       │ <0.5       │ 0.5–0.9    │ ≥0.9                     │
-       ▼            ▼            ▼                          │
-    normal   stage2_refine   describe_defect                │
-             (gpt-4o +       (gpt-4o)                       │
-              in-context                                    │
-              labels)                                       │
-       │            │            │                          │
-       └────────────┴────────────┴──────────┬───────────────┘
-                                            │
-                        ┌───────────────────▼────────────────────┐
-                        │  InferenceResult → retina:results:{id} │
-                        │  add to retina:al:pool if uncertain    │
-                        └────────────────────────────────────────┘
+   POST /api/submit  ── file + optional product_class
+        │
+        ├─ queue depth ≥ ceiling? ──────────────────► 503, submission shed
+        ├─ product_class not a trained category? ───► 400
+        │
+        ▼
+   data/images/<ab>/<sha256>.png        XADD retina:jobs:queue (MAXLEN ~100k)
+        │                                      │
+        └──────────── content address ─────────┤
+                                               ▼
+                                    worker: XREADGROUP + XAUTOCLAIM sweep
+                                               │
+                        unparseable / past delivery cap ──► retina:jobs:dlq
+                                               │
+                    ┌──────────────────────────┴──────────────────────────┐
+                    │ product_class declared?                             │
+                    └──────┬───────────────────────────────┬──────────────┘
+                       yes │                            no │
+                           │                               ▼
+                           │                 session cache (retina:session:*, 1h)
+                           │                               │ miss
+                           │                               ▼
+                           │                 identify_product (gpt-4o-mini)
+                           │                 guarded by circuit breaker
+                           │                      │              │ open / unavailable
+                           ▼                      ▼              ▼
+              ┌────────────────────────┐   (product class)   NEEDS_REVIEW
+              │ PatchCore registry     │◄─────────┘
+              │ 2-model LRU, 15 ckpts  │────────► no checkpoint ──► zero_shot_detect
+              └───────────┬────────────┘                            (gpt-4o)
+                          │ score                                        │
+         ┌────────────────┼────────────────┐                near boundary│
+         │ < threshold    │ band           │ ≥ upper edge                │
+         ▼                ▼                ▼                             ▼
+      normal        stage2_refine    describe_defect               NEEDS_REVIEW
+                    (gpt-4o + labels)  (gpt-4o)
+                          │
+              confirmed / rejected │ uncertain
+                          ▼        ▼
+                      COMPLETED   NEEDS_REVIEW        (exceptions ──► FAILED)
+                          │        │                        │
+                          └────────┴────────────────────────┘
+                                   ▼
+                     InferenceResult → retina:results:{job_id}  (7d TTL)
+                     NEEDS_REVIEW / uncertain → retina:al:pool
 ```
 
-- **identify_product** routes to the right specialist. Session-cached to keep
-  per-image cost at ~$0.00015 only on cache miss.
-- **PatchCore** is the numeric verdict for any of the 15 known product
-  categories. Memory bank + k-NN; no GPT call unless the score is interesting.
-- **describe_defect** turns a confirmed anomaly score into an operator-facing
-  sentence. Gated by a low-score guard so it cannot hallucinate defects on
+- **product_class** is optional on submit and is the normal case on a line,
+  where the station already knows what it is looking at. Supplying it skips
+  VLM identification entirely and routes straight to that checkpoint. An
+  unknown value is rejected with 400 rather than falling through to
+  zero-shot, so a typo fails loudly instead of returning a confident-looking
+  score from a detector that was never trained on the product.
+- **identify_product** is the cold-start path, reached only when no class was
+  declared and the session cache is empty. A circuit breaker opens after
+  repeated OpenAI failures and degrades to NEEDS_REVIEW rather than failing
+  every job while an outage lasts.
+- **PatchCore** is the numeric verdict for any of the 15 trained categories.
+  Memory bank + k-NN; no GPT call unless the score is interesting.
+- **stage2_refine** runs only inside the Stage 2 band, whose lower edge is
+  `anomaly_threshold` and whose upper edge is `stage2_trigger_max` (0.9 by
+  default) — both configurable, neither hardcoded. It confirms or rejects the
+  flag using operator-labeled examples as in-context supervision.
+- **describe_defect** turns a confirmed anomaly into an operator-facing
+  sentence, gated by a low-score guard so it cannot hallucinate defects on
   clean images.
-- **stage2_refine** runs only when Stage 1 confidence is ambiguous (score in
-  [0.5, 0.9)). Confirms or rejects the flag and names the defect class,
-  using operator-labeled examples as in-context supervision.
-- **zero_shot_detect** is the fallback for products without a trained
-  PatchCore checkpoint. Best-effort; flagged images go to expert review.
+- **zero_shot_detect** is the fallback for products with no trained
+  checkpoint. Best-effort and uncalibrated, so a score near the decision
+  boundary terminates as NEEDS_REVIEW instead of a verdict.
+
+**Three terminal states, and the distinction matters operationally.**
+`COMPLETED` means the pipeline reached a verdict it stands behind.
+`NEEDS_REVIEW` means it ran correctly and declined to decide — normal
+operation on a hard image, and it feeds the labeling pool. `FAILED` means
+the pipeline broke and someone should be paged. Merging the middle case into
+`FAILED` makes the failure rate track how hard the images are rather than how
+healthy the system is. See `docs/DECISIONS.md` #18.
 
 ## Measured Performance
 
@@ -152,37 +187,56 @@ when the session cache is cold (product changeover).
 
 ### Data Flow
 
-1. Client POSTs an image to `POST /api/submit`. File is saved to
-   `data/uploads/<job_id>.png`.
-2. API writes `retina:images:<image_id>` with the file path (reverse lookup
-   for later image serving) and XADDs an `InferenceJob` JSON to
-   `retina:jobs:queue`.
-3. Worker `XREADGROUP`s from the stream (consumer group `workers`), sets job
-   status to `processing`.
-4. Worker loads the image, runs `VLMRouter.identify_product` (gpt-4o-mini,
-   cached via `retina:session:product_class` with 1-hour TTL).
-5. If the product is known and has a checkpoint: `PatchCoreRegistry.get(...)`
-   returns a hot model, worker runs inference, pulls `anomaly_score` and
+1. Client POSTs an image to `POST /api/submit`, optionally declaring
+   `product_class`. The API refuses with 503 if the queue is at its depth
+   ceiling, and with 400 if the declared class has no trained checkpoint.
+2. The image is content-addressed by the sha256 of its bytes and written to
+   `data/images/<ab>/<sha256>.png`. The job payload carries the id only —
+   never a filesystem path, so it survives a container boundary.
+3. API writes `retina:images:<image_id>` (relative layout, for image serving)
+   and XADDs an `InferenceJob` to `retina:jobs:queue` with `MAXLEN ~`.
+   The response reports `queue_depth` and `queue_ceiling`.
+4. Worker sweeps for entries abandoned by a crashed replica (`XAUTOCLAIM`,
+   past `job_max_deliveries` → `retina:jobs:dlq`), then `XREADGROUP`s from
+   the stream as a consumer named after its hostname, and sets job status to
+   `processing`. A payload that cannot be parsed is acknowledged and copied
+   to the dead-letter stream rather than left stuck in the pending list.
+5. Worker resolves the image from its own image root and the content address.
+6. Product routing:
+   - `product_class` declared → used directly, no VLM call, no session-cache
+     write (it belongs to that job).
+   - otherwise → `retina:session:product_class` (1-hour TTL), and on a miss
+     `VLMRouter.identify_product` (gpt-4o-mini), guarded by a circuit
+     breaker. If the breaker is open or the call exhausts its retry budget,
+     the job terminates as `NEEDS_REVIEW` rather than `FAILED`.
+7. If the product has a checkpoint: `PatchCoreRegistry.get(...)` returns a
+   hot model (2-model LRU), worker runs inference, pulls `anomaly_score` and
    `anomaly_map`.
-6. Routing (exactly one path per score — see `docs/DECISIONS.md` entry 15):
-   - `score ≤ 0.5` → mark normal, no further VLM call.
-   - `0.5 < score < 0.9` → `stage2_refine` with labeled examples first.
-     If Stage 2 confirms the defect, `describe_defect` runs afterward for
-     the operator-facing description; if Stage 2 rejects it as a false
-     positive, no `describe_defect` call is made.
-   - `score ≥ 0.9` → `describe_defect` directly; Stage 2 adds nothing when
-     PatchCore is already this confident.
-7. If the product is unknown or has no checkpoint → `zero_shot_detect` via
-   gpt-4o.
-8. Worker builds `InferenceResult`, writes to `retina:results:{job_id}`
-   (7-day TTL), adds to `retina:al:pool` if `uncertainty_score >
-   threshold`, XACKs the stream entry.
-9. Client polls `GET /api/result/{job_id}`; the endpoint blocks up to 30 s
-   waiting for the Redis hash to appear.
-10. Label UI reads `GET /api/labels/pool`, renders the queue; operator
-    annotates and POSTs to `/api/labels/submit`. Label lands in
-    `retina:labels:{image_id}` with 7-day TTL and feeds the next Stage 2
-    call for that product.
+8. Routing by score (exactly one path — see `docs/DECISIONS.md` entry 15).
+   The band edges are `anomaly_threshold` and `stage2_trigger_max`, both
+   configurable:
+   - below the threshold → normal, no further VLM call.
+   - inside the band → `stage2_refine` with labeled examples first. A
+     confirmation is followed by `describe_defect`; a rejection skips it; an
+     `uncertain` verdict terminates as `NEEDS_REVIEW`.
+   - at or above the upper edge → `describe_defect` directly; Stage 2 adds
+     nothing when PatchCore is already this confident.
+9. If the product is unknown or has no checkpoint → `zero_shot_detect` via
+   gpt-4o. A score near the decision boundary terminates as `NEEDS_REVIEW`,
+   since zero-shot is uncalibrated for an untrained product.
+10. Worker builds the `InferenceResult`, writes it to
+    `retina:results:{job_id}` (7-day TTL) **before** any bookkeeping, so a
+    failing pool insert cannot downgrade a durable result to `FAILED`. A
+    `NEEDS_REVIEW` result always joins `retina:al:pool`; a `COMPLETED` one
+    joins only if its uncertainty exceeds the threshold. The stream entry is
+    XACKed either way.
+11. Client polls `GET /api/result/{job_id}`; the endpoint waits up to 30 s
+    (async, so it does not block other requests) for the Redis hash.
+12. Label UI reads `GET /api/labels/pool`, renders the queue; operator
+    annotates and POSTs to `/api/labels/submit`. The label lands in
+    `retina:labels:{image_id}` with a 7-day TTL, is indexed in
+    `retina:labels_index` by timestamp, and feeds the next Stage 2 call for
+    that product. **Nothing retrains from it** — see `docs/DECISIONS.md` #33.
 
 ### Design Rationale
 
@@ -317,7 +371,7 @@ RETINA/
 │   ├── main.py                 8 endpoints, ~350 lines
 │   └── requirements.txt
 ├── checkpoints/                PatchCore .ckpt files (gitignored, 7.4 GB)
-├── data/uploads/               Image files uploaded via the API
+├── data/images/                Content-addressed images, <ab>/<sha256>.png
 ├── docs/
 │   ├── integration_plan.md     Worker rewrite blueprint
 │   ├── vlm_router_design.md    Specialist-first / explainer-second pattern
@@ -363,7 +417,7 @@ RETINA/
 │           └── patchcore_registry.py  LRU-cached per-category loader
 ├── .env.example
 ├── CLAUDE.md                   Operating contract (invariants + protocols)
-├── docker-compose.yml          Wires Postgres/Redis/worker — not the demo path
+├── docker-compose.yml          Wires Redis/worker/frontend (no Postgres — ADR 10)
 └── README.md                   (this file)
 ```
 
@@ -390,12 +444,34 @@ RETINA/
    7-day TTL. There is no Postgres persistence, no export pipeline, no
    versioning. Good enough for the active learning demo; insufficient for
    audit or retraining on historical labels.
-6. **Session cache bleed across product changes.** `identify_product` is
-   cached under `retina:session:product_class` with a 1-hour TTL to avoid
-   per-image cost. If a demo switches product mid-session without clearing
-   the cache, the next image routes through the previous product's
-   PatchCore and scores badly. Operator mitigation:
+6. **Session cache bleed across product changes.** Only affects images
+   submitted *without* a `product_class`. A declared class bypasses the
+   cache entirely and is never written to it, so the normal path is immune.
+   For undeclared images the 1-hour TTL still applies: switching product
+   mid-session routes the next images through the previous product's
+   PatchCore. Operator mitigation:
    `redis-cli DEL retina:session:product_class retina:session:product_confidence`.
+7. **The router still runs first for undeclared products.** CLAUDE.md §1.1
+   describes the VLM as the cold-start fallback. That is now true whenever
+   a class is declared, and still false when it is not: PatchCore is not
+   reordered ahead of identification, because choosing a checkpoint without
+   an identifier is a different system needing its own evaluation.
+   `docs/DECISIONS.md` #22 records this explicitly.
+8. **The active-learning pool has no retraining consumer.** Labels are
+   selected, collected, indexed and fed to Stage 2 as few-shot context —
+   and nothing trains on them. No retraining trigger, no checkpoint
+   versioning, no validation gate, no promotion or rollback path. The loop
+   that would close it is specified in `docs/DECISIONS.md` #33.
+9. **Thresholds are asserted, not fitted.** One `anomaly_threshold` spans
+   15 categories whose PatchCore score distributions differ, and the Stage 2
+   band edges were chosen by intuition rather than derived from per-bin
+   error rates. Stage 2's accuracy *inside* that band has never been
+   measured against operator labels, so the cascade is not yet justified by
+   evidence. `docs/DECISIONS.md` #31 and #32.
+10. **No real cost accounting.** Per-inference cost is summed from four
+    hardcoded constants; the `usage` field returned on every OpenAI response
+    is never read. The central design argument is cost, and the system
+    cannot report the number it rests on. `docs/DECISIONS.md` #37.
 
 ## Roadmap
 
@@ -409,7 +485,9 @@ RETINA/
 4. **Wire BGAD as an optional pixel-level Stage 2** for customers where
    training cost is acceptable.
 5. **Retraining pipeline.** Nightly memory-bank refresh from labeled
-   normals; diff coreset, keep rollback.
+   normals; diff coreset, keep rollback. Blocked on a durable label store —
+   see `docs/DECISIONS.md` #33 for the full loop and #34 for why labels
+   must move out of Redis first.
 6. **Production API layer + Docker packaging** for higher per-request
    throughput and deployment reproducibility — built fresh rather than
    resurrecting the deleted Rust backend (`docs/DECISIONS.md` entry 14).
